@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/*.db
+data/*.lock
+output/logs/
+output/screenshots/
+output/html/
+output/test-archives/
+output/reports/**/*.xlsx
+.DS_Store

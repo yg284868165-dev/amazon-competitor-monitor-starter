@@ -1,0 +1,40 @@
+{
+  "amazon": {
+    "base_url": "https://www.amazon.com",
+    "postal_code": "90001",
+    "language": "en-US",
+    "currency": "USD",
+    "headless": false,
+    "chrome_executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "navigation_timeout_ms": 45000,
+    "initialization_attempts": 3,
+    "initialization_retry_delay_seconds": 3,
+    "retry_delay_seconds": 5,
+    "min_delay_seconds": 2.5,
+    "max_delay_seconds": 5.5,
+    "retries": 2,
+    "save_error_html": true,
+    "save_error_screenshot": true
+  },
+  "search": {"default_pages": 3},
+  "bestseller": {
+    "minimum_complete_items": 98,
+    "render_wait_seconds": 20,
+    "render_poll_seconds": 4
+  },
+  "changes": {
+    "price_percent_alert": 5,
+    "bsr_position_alert": 20,
+    "keyword_position_alert": 10,
+    "missing_confirmations": 2
+  },
+  "auto_retry": {
+    "enabled": true,
+    "delay_seconds": 300
+  },
+  "retention": {
+    "history_days": 30,
+    "diagnostics_days": 30,
+    "logs_days": 30
+  }
+}

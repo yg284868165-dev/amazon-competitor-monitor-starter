@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "time": "09:00",
+  "send_when_no_changes": true,
+  "max_items": 15
+}

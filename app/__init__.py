@@ -1,0 +1,2 @@
+"""Amazon competitor monitoring package."""
+

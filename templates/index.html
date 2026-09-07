@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Amazon 竞品监控</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%23176b4d%22/><path d=%22M18 20h28v7H18zm0 12h20v7H18zm0 12h28v7H18z%22 fill=%22white%22/></svg>">
+  <link rel="stylesheet" href="/static/app.css?v=20260903-summary-layout">
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">AMAZON US</span><h1>竞品监控控制台</h1><p>项目、竞品、关键词、榜单与定时任务统一管理</p></div>
+    <div id="systemBadge" class="badge">本机运行</div>
+  </header>
+  <nav id="tabs">
+    <button data-tab="dashboard" class="active">概览</button>
+    <button data-tab="projects">产品项目</button>
+    <button data-tab="competitors">竞品 ASIN</button>
+    <button data-tab="keywords">关键词</button>
+    <button data-tab="categories">BSR 类目</button>
+    <button data-tab="schedule">定时任务</button>
+    <button data-tab="notification">微信通知</button>
+    <button data-tab="newProducts">新品雷达</button>
+  </nav>
+  <main>
+    <section id="dashboard" class="panel active">
+      <div class="cards">
+        <article class="card"><span>产品项目</span><strong id="projectCount">—</strong></article>
+        <article class="card"><span>竞品 ASIN</span><strong id="asinCount">—</strong></article>
+        <article class="card"><span>关键词</span><strong id="keywordCount">—</strong></article>
+        <article class="card"><span>最近状态</span><strong id="latestStatus">—</strong></article>
+      </div>
+      <div class="grid-two">
+        <article class="surface">
+          <div class="section-title"><div><h2>手动执行</h2><p>任务在后台运行，可以关闭页面。</p></div></div>
+          <div class="form-row">
+            <label>产品项目<select id="runProject"></select></label>
+            <label>采集内容<select id="runTask"><option value="all">全部</option><option value="product">商品详情</option><option value="search">关键词</option><option value="bestseller">BSR榜单</option></select></label>
+            <button class="primary" id="runButton">开始执行</button>
+          </div>
+          <div id="runMessage" class="message"></div>
+        </article>
+        <article class="surface">
+          <div class="section-title"><div><h2>报告下载</h2><p>主报告按项目保存；日报和周报按最新完整周期生成。</p></div><button class="ghost" id="refreshReports">刷新</button></div>
+          <div id="reportList" class="report-list"></div>
+        </article>
+      </div>
+      <article class="surface">
+        <div class="section-title"><div><h2>最近运行</h2><p>展示最近 30 个采集批次。</p></div><button class="ghost" id="refreshRuns">刷新</button></div>
+        <div class="table-wrap"><table id="runsTable"><thead></thead><tbody></tbody></table></div>
+      </article>
+    </section>
+
+    <section id="projects" class="panel config-panel" data-kind="projects"></section>
+    <section id="competitors" class="panel config-panel" data-kind="competitors"></section>
+    <section id="keywords" class="panel config-panel" data-kind="keywords"></section>
+    <section id="categories" class="panel config-panel" data-kind="categories"></section>
+
+    <section id="schedule" class="panel">
+      <article class="surface narrow">
+        <div class="section-title"><div><h2>定时任务</h2><p>“保存设置”仅保存配置；“安装 / 更新”会自动启用、保存并安装系统任务。</p></div><span id="scheduleStatus" class="badge muted">读取中</span></div>
+        <div class="schedule-form">
+          <label class="switch-row"><input type="checkbox" id="scheduleEnabled"><span>启用定时任务配置</span></label>
+          <label>每日执行时间（逗号分隔）<input id="scheduleTimes" placeholder="08:00, 12:00, 16:00, 20:00"></label>
+          <label class="switch-row"><input type="checkbox" id="wakeEnabled"><span>在每次执行前自动唤醒电脑</span></label>
+          <label>提前唤醒分钟数（1–30）<input id="wakeLeadMinutes" type="number" min="1" max="30" value="5"></label>
+          <label>采集内容<select id="scheduleTask"><option value="all">全部</option><option value="product">商品详情</option><option value="search">关键词</option><option value="bestseller">BSR榜单</option></select></label>
+          <label>产品项目<select id="scheduleProject"></select></label>
+        </div>
+        <div class="actions"><button class="primary" id="saveSchedule">保存设置</button><button id="installSchedule">安装 / 更新</button><button class="danger" id="uninstallSchedule">卸载</button></div>
+        <p class="schedule-note">首次安装自动唤醒时，macOS 会要求输入管理员密码。合盖状态仍不能保证自动采集。</p>
+        <pre id="scheduleOutput"></pre>
+      </article>
+    </section>
+
+    <section id="notification" class="panel">
+      <article class="surface narrow">
+        <div class="section-title"><div><h2>Server酱微信简报</h2><p>每日发送运营事件；每周一10:00复盘评价、排名和广告观察；自动采集异常在重试后单独通知。</p></div><span id="notificationStatus" class="badge muted">读取中</span></div>
+        <div class="schedule-form">
+          <label class="switch-row"><input type="checkbox" id="notificationEnabled"><span>启用微信日报、周报和采集异常通知</span></label>
+          <label>每日发送时间<input id="notificationTime" type="time" value="09:00"></label>
+          <label class="switch-row"><input type="checkbox" id="notifyNoChanges"><span>没有变化时也发送日报/周报确认</span></label>
+          <label>日报最多展示变化数（1–50，周报全部展示）<input id="notificationMaxItems" type="number" min="1" max="50" value="15"></label>
+          <label class="notification-key">Server酱 SendKey<input id="serverchanSendkey" type="password" autocomplete="new-password" placeholder="未保存；请输入 SCT 开头的 SendKey"></label>
+        </div>
+        <p class="schedule-note">SendKey 仅写入本机 macOS 钥匙串，不写入项目文件、数据库或日志。留空保存不会覆盖已有密钥。</p>
+        <div class="actions"><button class="primary" id="saveNotification">保存设置</button><button id="testNotification">保存并发送测试</button><button id="sendYesterday">立即发送昨日摘要</button><button id="sendWeekly">立即发送上周周报</button><button id="installNotification">安装 / 更新定时发送</button><button class="danger" id="uninstallNotification">卸载定时发送</button></div>
+        <pre id="notificationOutput"></pre>
+      </article>
+      <article class="surface">
+        <div class="section-title"><div><h2>最近发送记录</h2><p>这里只记录发送结果，不保存 SendKey。</p></div><button class="ghost" id="refreshNotification">刷新</button></div>
+        <div class="table-wrap"><table id="notificationLogs"><thead></thead><tbody></tbody></table></div>
+      </article>
+    </section>
+
+    <section id="newProducts" class="panel">
+      <article class="surface">
+        <div class="section-title"><div><h2>新竞争对手筛选规则</h2><p>BSR前100中未加入监控列表的ASIN，按同类关键词和上架天数筛选；关键词使用逗号或换行分隔。</p></div><button class="primary" id="saveNewProductRules">保存规则</button></div>
+        <div id="newProductRules" class="rule-list"></div>
+      </article>
+      <article class="surface">
+        <div class="section-title"><div><h2>BSR新竞争对手候选</h2><p>只有同类、上架时间小于设定天数且未在监控ASIN列表中的商品才会提醒。</p></div><button class="ghost" id="refreshNewProducts">刷新</button></div>
+        <div class="form-row filter-row"><label>产品项目<select id="newProductProjectFilter"></select></label><label>筛选状态<select id="newProductStatusFilter"><option value="all">全部状态</option><option value="pending">待确认</option><option value="same">同类竞品</option><option value="not_same">非同类产品</option><option value="too_old">超过3个月</option></select></label></div>
+        <div class="table-wrap"><table id="newProductTable"><thead></thead><tbody></tbody></table></div>
+      </article>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js?v=20260907-ad-alerts"></script>
+</body>
+</html>
