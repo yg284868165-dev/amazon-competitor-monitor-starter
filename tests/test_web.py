@@ -12,7 +12,12 @@ import app.web_config as web_config
 
 def test_dashboard_and_read_apis():
     client = app.test_client()
-    assert client.get("/").status_code == 200
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    dashboard_text = dashboard.get_data(as_text=True)
+    assert "Mac 需保持用户登录并使用“睡眠”" in dashboard_text
+    assert "schedule.py permission-test" in dashboard_text
+    assert "无需手动开启“网络唤醒”" in dashboard_text
     assert client.get("/api/health").get_json()["ok"] is True
     for kind in ("projects", "competitors", "keywords", "categories"):
         response = client.get(f"/api/config/{kind}")

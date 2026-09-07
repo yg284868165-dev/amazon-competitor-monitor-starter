@@ -122,6 +122,14 @@ BSR前100中的每个ASIN都会按当前榜单重新检查，不再要求它必�
 
 ## 定时任务（macOS）
 
+启用前请先确认：
+
+- Mac 必须保持用户登录；请使用“睡眠”，不要关机或退出登录。系统即使能定时开机，未登录时用户级采集任务也不会运行。
+- MacBook 建议连接电源并保持开盖；普通合盖状态不保证能自动唤醒和采集。
+- 如果项目放在“桌面”、“文稿”等受保护目录，macOS 询问时需允许 App 和 Python 访问对应文件夹。
+- 不需要手动开启“网络唤醒”；工具会使用 macOS 系统定时唤醒事件。
+- 先确认手动采集成功，再安装定时任务。建议将首次测试时间设为几分钟后，让 Mac 进入睡眠，实际验证一次唤醒与采集。
+
 编辑 `config/schedule.json`：
 
 ```json
@@ -141,7 +149,7 @@ BSR前100中的每个ASIN都会按当前榜单重新检查，不再要求它必�
 .venv/bin/python schedule.py install
 ```
 
-建议直接在管理页面修改并点击“安装 / 更新”。启用自动唤醒时，首次安装会弹出 macOS 管理员密码窗口；系统为每次采集提前唤醒。LaunchAgent 直接启动 Python，Python启动后再通过 `caffeinate` 阻止整机睡眠，避免外层包装进程丢失 Desktop 访问权限。合盖状态仍不能保证执行。修改时间后需要重新安装，让系统载入新计划。其他命令：
+建议直接在管理页面修改并点击“安装 / 更新”。启用自动唤醒时，首次安装会弹出 macOS 管理员密码窗口；系统为每次采集提前唤醒。LaunchAgent 直接启动 Python，Python 启动后再通过 `caffeinate` 阻止整机睡眠。修改时间、任务或自动唤醒设置后，都需要再点一次“安装 / 更新”，让系统载入新计划。其他命令：
 
 ```bash
 .venv/bin/python schedule.py status
@@ -150,7 +158,7 @@ BSR前100中的每个ASIN都会按当前榜单重新检查，不再要求它必�
 .venv/bin/python schedule.py uninstall
 ```
 
-`permission-test` 使用真实 LaunchAgent 验证后台 Python能否读取 Desktop 项目和 macOS钥匙串，但不会访问 Amazon或发送微信。定时日志位于 `output/logs/scheduler.stdout.log` 和 `scheduler.stderr.log`。程序带非阻塞锁，如果上一次任务尚未完成，下一个时间点不会同时启动第二份采集。可用 `.venv/bin/python schedule.py status` 同时核对普通任务和自动唤醒是否安装。
+安装后请先运行 `permission-test`。它使用真实 LaunchAgent 验证后台 Python 能否读取 Desktop 项目和 macOS 钥匙串，但不会访问 Amazon 或发送微信。再运行 `status`，确认输出中的“系统状态”和“自动唤醒”都是“已安装”。定时日志位于 `output/logs/scheduler.stdout.log` 和 `scheduler.stderr.log`。程序带非阻塞锁，如果上一次任务尚未完成，下一个时间点不会同时启动第二份采集。
 
 ## 微信日报与周报
 

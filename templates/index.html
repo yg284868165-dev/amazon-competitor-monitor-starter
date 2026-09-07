@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Amazon 竞品监控</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%23176b4d%22/><path d=%22M18 20h28v7H18zm0 12h20v7H18zm0 12h28v7H18z%22 fill=%22white%22/></svg>">
-  <link rel="stylesheet" href="/static/app.css?v=20260903-summary-layout">
+  <link rel="stylesheet" href="/static/app.css?v=20260907-wake-checklist">
 </head>
 <body>
   <header>
@@ -68,7 +68,17 @@
           <label>产品项目<select id="scheduleProject"></select></label>
         </div>
         <div class="actions"><button class="primary" id="saveSchedule">保存设置</button><button id="installSchedule">安装 / 更新</button><button class="danger" id="uninstallSchedule">卸载</button></div>
-        <p class="schedule-note">首次安装自动唤醒时，macOS 会要求输入管理员密码。合盖状态仍不能保证自动采集。</p>
+        <aside class="wake-checklist">
+          <strong>首次启用前检查</strong>
+          <ul>
+            <li>先确认手动采集成功；安装自动唤醒时会要求 macOS 管理员密码。</li>
+            <li>Mac 需保持用户登录并使用“睡眠”，不要关机或退出登录。</li>
+            <li>MacBook 建议连接电源并保持开盖；合盖时不保证能唤醒和采集。</li>
+            <li>macOS 询问时，允许 App 和 Python 访问项目所在文件夹。无需手动开启“网络唤醒”。</li>
+            <li>安装后在终端运行 <code>.venv/bin/python schedule.py permission-test</code>，再运行 <code>.venv/bin/python schedule.py status</code>，确认两项均已安装。</li>
+            <li>建议先设置一个几分钟后的任务，让 Mac 睡眠并实际验证。修改计划后要重新点击“安装 / 更新”。</li>
+          </ul>
+        </aside>
         <pre id="scheduleOutput"></pre>
       </article>
     </section>

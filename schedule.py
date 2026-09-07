@@ -133,6 +133,10 @@ def install() -> None:
     print(f"已安装: {PLIST_PATH}")
     print("执行时间:", ", ".join(config["times"]))
     print("自动唤醒:", f"已启用（提前 {config.get('wake_lead_minutes', 5)} 分钟）" if config.get("wake_enabled") else "未启用")
+    if config.get("wake_enabled"):
+        print("可靠运行提醒: 保持用户登录，请使用睡眠而非关机或退出登录；MacBook 建议连接电源并保持开盖。")
+        print("下一步: 运行 .venv/bin/python schedule.py permission-test")
+        print("然后运行: .venv/bin/python schedule.py status，确认系统状态和自动唤醒均为已安装。")
 
 
 def uninstall() -> None:
