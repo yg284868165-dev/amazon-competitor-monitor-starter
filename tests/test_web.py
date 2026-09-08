@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from io import BytesIO
 
@@ -10,7 +11,9 @@ from app.storage.database import Database
 import app.web_config as web_config
 
 
-def test_dashboard_and_read_apis():
+def test_dashboard_and_read_apis(monkeypatch, tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    monkeypatch.setattr(web, "Database", lambda: db)
     client = app.test_client()
     dashboard = client.get("/")
     assert dashboard.status_code == 200
@@ -35,6 +38,14 @@ def test_dashboard_and_read_apis():
     new_products = client.get("/api/new-products")
     assert new_products.status_code == 200
     assert new_products.get_json()["ok"] is True
+
+
+def test_dashboard_explains_failed_briefing_recovery_and_broad_matching():
+    page = app.test_client().get("/").get_data(as_text=True)
+    assert "发送失败的日报或周报可以查看简报" in page
+    assert "旧记录会明确标记为根据现存数据重建" in page
+    assert "短语中任意一个词命中即可" in page
+    assert "notificationPreview" in page
 
 
 def test_rejects_unknown_config():
@@ -90,13 +101,14 @@ def test_report_filename_includes_safe_project_name():
 
 
 def test_summary_reports_can_be_downloaded_and_change_report_is_removed(monkeypatch):
-    monkeypatch.setattr(web, "build_daily_excel_report", lambda *args, **kwargs: BytesIO(b"excel"))
-    monkeypatch.setattr(web, "build_weekly_excel_report", lambda *args, **kwargs: BytesIO(b"weekly-excel"))
+    dates = {}
+    monkeypatch.setattr(web, "build_daily_excel_report", lambda target, *args, **kwargs: dates.update(daily=target) or BytesIO(b"excel"))
+    monkeypatch.setattr(web, "build_weekly_excel_report", lambda target, *args, **kwargs: dates.update(weekly=target) or BytesIO(b"weekly-excel"))
     monkeypatch.setattr(web, "load_projects", lambda: [Project("project", "测试项目", "90001")])
     client = app.test_client()
 
-    daily = client.get("/reports/summary/daily")
-    weekly = client.get("/reports/summary/weekly")
+    daily = client.get("/reports/summary/daily?date=2026-09-01")
+    weekly = client.get("/reports/summary/weekly?date=2026-09-06")
     assert daily.status_code == 200 and daily.data == b"excel"
     assert weekly.status_code == 200 and weekly.data == b"weekly-excel"
     assert "attachment" in daily.headers["Content-Disposition"]
@@ -104,7 +116,61 @@ def test_summary_reports_can_be_downloaded_and_change_report_is_removed(monkeypa
     assert daily.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     assert ".xlsx" in weekly.headers["Content-Disposition"]
     assert weekly.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert dates == {"daily": date(2026, 9, 1), "weekly": date(2026, 9, 6)}
+    assert client.get("/reports/summary/weekly?date=2026-09-05").status_code == 400
     assert client.get("/reports/project/changes").status_code == 404
+
+
+def test_failed_briefing_can_be_viewed_and_retried(monkeypatch, tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    db.record_notification(
+        "2026-09-01", False, "Amazon竞品昨日监控｜9月1日", 4,
+        "Server酱请求失败", body="## 9月1日日报\n\n原始内容",
+    )
+    log_id = db.fetchall("SELECT id FROM notification_logs")[0]["id"]
+    captured = {}
+    monkeypatch.setattr(web, "Database", lambda: db)
+    monkeypatch.setattr(web, "load_notification_config", lambda: {
+        "enabled": True, "time": "09:00", "send_when_no_changes": True, "max_items": 15,
+    })
+    monkeypatch.setattr(web, "has_sendkey", lambda: True)
+    monkeypatch.setattr(web, "send_daily", lambda target, force=False: captured.update({
+        "target": target, "force": force,
+    }) or {"sent": True, "message": "发送成功", "item_count": 4})
+    client = app.test_client()
+
+    history = client.get("/api/notification").get_json()["logs"]
+    assert len(history) == 1
+    assert history[0]["retryable"] is True
+    assert history[0]["has_body"] is True
+    assert "body" not in history[0]
+    assert history[0]["download_url"] == "/reports/summary/daily?date=2026-09-01"
+    detail = client.get(f"/api/notification/logs/{log_id}").get_json()["row"]
+    assert detail["body"] == "## 9月1日日报\n\n原始内容"
+    assert detail["body_source"] == "stored"
+    retried = client.post(f"/api/notification/logs/{log_id}/retry")
+    assert retried.status_code == 200
+    assert captured == {"target": date(2026, 9, 1), "force": True}
+
+
+def test_notification_detail_labels_rebuilt_legacy_body(monkeypatch, tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    db.record_notification(
+        "2026-09-01", False, "Amazon竞品昨日监控｜9月1日", 4,
+        "Server酱请求失败", body=None,
+    )
+    log_id = db.fetchall("SELECT id FROM notification_logs")[0]["id"]
+    monkeypatch.setattr(web, "Database", lambda: db)
+    monkeypatch.setattr(web, "load_notification_config", lambda: {"max_items": 15})
+    monkeypatch.setattr(
+        web, "build_daily_summary",
+        lambda target, max_items: ("重建日报", "## 根据现存数据重建", 3),
+    )
+
+    detail = app.test_client().get(f"/api/notification/logs/{log_id}").get_json()["row"]
+
+    assert detail["body"] == "## 根据现存数据重建"
+    assert detail["body_source"] == "rebuilt"
 
 
 def test_candidate_date_endpoint_accepts_manual_date(monkeypatch):

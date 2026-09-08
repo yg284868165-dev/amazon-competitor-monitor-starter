@@ -484,10 +484,10 @@ def send_daily(report_date: date | None = None, force: bool = False) -> dict[str
     db = Database()
     try:
         message = send_serverchan(title, body)
-        db.record_notification(target_date.isoformat(), True, title, count, message)
+        db.record_notification(target_date.isoformat(), True, title, count, message, body=body)
         return {"sent": True, "message": message, "item_count": count, "title": title}
     except Exception as exc:
-        db.record_notification(target_date.isoformat(), False, title, count, str(exc))
+        db.record_notification(target_date.isoformat(), False, title, count, str(exc), body=body)
         raise
 
 
@@ -503,10 +503,10 @@ def send_weekly(week_end: date | None = None, force: bool = False) -> dict[str, 
     db = Database()
     try:
         message = send_serverchan(title, body)
-        db.record_notification(target_date.isoformat(), True, title, count, message)
+        db.record_notification(target_date.isoformat(), True, title, count, message, body=body)
         return {"sent": True, "message": message, "item_count": count, "title": title}
     except Exception as exc:
-        db.record_notification(target_date.isoformat(), False, title, count, str(exc))
+        db.record_notification(target_date.isoformat(), False, title, count, str(exc), body=body)
         raise
 
 

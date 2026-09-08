@@ -26,6 +26,7 @@ Python 3.11、Flask、Playwright、BeautifulSoup、SQLite、openpyxl；前端是
 - `app/collectors/` 负责采集，`app/parsers/` 负责解析，`app/comparison/` 负责变化判断，`app/reports/` 负责主报告和动态日报/周报 Excel。
 - `app/notifications/` 负责日报、周报与 Server酱发送；SendKey 只从 macOS 钥匙串读取，禁止写入项目文件或日志。
 - 概览页只保留各项目主报告；原重复的变化提醒工作簿不再生成。昨日日报和上周周报都通过下载接口从数据库按需生成带商品链接的 Excel。
+- 竞品 ASIN 表格修改后必须进入前端未保存状态；切换标签页、继续批量添加或关闭/刷新页面前应提醒先保存，保存失败时不得离开当前页。
 - 日报 Excel 将变化事件的 `event_time` 展示为“采集时间”；它只表示程序检测到变化的时刻，不得表述为竞品实际修改时间。
 - 微信日报中的状态型字段排除日内回到原值的净零变化；价格、Coupon/Deal、企业价、库存、购物车卖家、跟卖、发货方、高退货率标签、商品页面状态和类目名称属于事件型字段，即使日终恢复也保留。评价数量不进日报。
 - 每周一10:00的独立周报完整复盘上周每日实际进入日报的所有重点变化，并汇总评价变化，以及大小类目BSR、关键词自然位的完整自然周7/14/28日趋势；微信周报不受日报 `max_items` 上限限制，排名趋势不得进入日报。周状态使用“截至周末仍保持变化/周内已恢复原状态”，不得表述成系统已经判断业务上必须关注。
@@ -38,6 +39,7 @@ Python 3.11、Flask、Playwright、BeautifulSoup、SQLite、openpyxl；前端是
 - 商品页面连续经过全部配置重试仍命中 Amazon 404/Dogs 文案时记为“页面变狗”，命中明确 `no longer available` 文案时记为“商品下架”；两者及恢复均进入日报。普通 `Currently unavailable` 仍属于库存断货。
 - `app/presentation.py` 统一商品身份与变化文案，`app/trends.py` 负责自然周7/14/28天绝对名次趋势，`app/candidates.py` 负责BSR新竞争对手筛选与人工状态。
 - BSR新竞争对手不以“相较上批首次进榜”为前提：当前前100中未配置在监控ASIN列表、经确认为同类且上架天数小于项目设定值的ASIN应生成一次性提醒。
+- 新品包含关键词按单词宽泛匹配：一个配置短语拆词后任一词命中商品文案即算命中，排除词仍优先；已有可匹配文案但未命中任何包含词时自动标记 `not_same`，只有未配置包含词、无可用文案或命中但缺少上架日期等无法完成判断的情况才保留 `pending`。
 - 新品雷达允许人工填写或清空候选上架日期，保存后必须重算年龄与筛选状态；候选日期来源使用 `date_source=auto/manual` 区分，人工日期不得被普通候选补采覆盖。
 - `config/new_product_rules.json` 是各项目新品同类关键词、排除关键词和最大上架天数的配置真源。
 - `config/settings.json` 的 `retention` 节点控制自动清理：数据库历史、异常诊断和日志统一滚动保留30天；每次采集或重试前执行，固定Excel报告不删除。
@@ -49,6 +51,7 @@ Python 3.11、Flask、Playwright、BeautifulSoup、SQLite、openpyxl；前端是
 - 每个正常/重试批次必须在创建 `BrowserManager` 前把完整目标清单预写入 `collection_task_outcomes`；这样断网发生在首个页面或邮编初始化阶段时，手动及自动重试仍能恢复全部目标。历史无清单失败批次从当前启用配置按原任务类型重建。
 - BSR 单页需先滚动并按 `bestseller.render_wait_seconds` 动态等待至少48条；整轮部分失败后按 `auto_retry.delay_seconds` 等待并自动精准重试一次，人工已处理时应跳过，禁止无限重试。
 - 只有 LaunchAgent 以 `--scheduled` 启动的自动采集才发送异常通知；应等待自动重试结束后区分“已恢复/仍失败”。Server酱不可达时通知写入 `collection_alerts` 队列，由后续定时采集补发，不得因告警失败中断采集。
+- 日报、周报和采集异常每次发送都应把当时生成的正文保存到 `notification_logs.body`，并按30天保留。管理页须允许查看历史正文和下载对应周期 Excel；失败的日报/周报可人工重发，后来已经成功补发的旧失败记录不可重复发送。采集异常继续使用 `collection_alerts` 自动补发，不走简报人工重发接口。
 - 不手工修改子配置中的既有 `project_id`；项目改名应从管理页面级联 Excel 子配置、新品规则、数据库和指定项目的定时配置。
 
 ## 当前状态与下一步

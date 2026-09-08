@@ -106,7 +106,7 @@ def flush_pending_collection_alerts(db: Database) -> dict[str, int]:
             db.mark_collection_alert_sent(int(row["id"]))
             db.record_notification(
                 str(row["created_at"])[:10], True, row["title"], 1, message,
-                channel="serverchan_collection_alert",
+                channel="serverchan_collection_alert", body=row["body"],
             )
             sent += 1
         except Exception as exc:
@@ -114,7 +114,7 @@ def flush_pending_collection_alerts(db: Database) -> dict[str, int]:
             db.mark_collection_alert_failed(int(row["id"]), error)
             db.record_notification(
                 str(row["created_at"])[:10], False, row["title"], 1, error,
-                channel="serverchan_collection_alert",
+                channel="serverchan_collection_alert", body=row["body"],
             )
             LOGGER.warning("采集异常通知发送失败，已保留等待下次补发: %s", exc)
             break

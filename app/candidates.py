@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -10,6 +11,24 @@ from app.paths import CONFIG_DIR
 from app.storage.database import Database
 
 RULES_PATH = CONFIG_DIR / "new_product_rules.json"
+
+
+def _include_term_matches(keywords: list[str], content: str) -> list[tuple[str, str]]:
+    """Broad-match include phrases: any meaningful term makes the rule match."""
+    matches: list[tuple[str, str]] = []
+    seen_terms: set[str] = set()
+    for keyword in keywords:
+        normalized = str(keyword or "").strip().casefold()
+        if not normalized:
+            continue
+        terms = re.findall(r"[a-z0-9]+|[\u3400-\u9fff]+", normalized)
+        for term in terms or [normalized]:
+            if term in content:
+                if term not in seen_terms:
+                    matches.append((normalized, term))
+                    seen_terms.add(term)
+                break
+    return matches
 
 
 def load_rules() -> dict[str, dict[str, Any]]:
@@ -155,7 +174,7 @@ def candidate_backlog(db: Database, project_id: str, discovered: list[dict[str, 
     def queue_priority(row: dict[str, Any]) -> tuple[int, int, int, str]:
         title = str(row.get("title") or "").casefold()
         excluded = any(word in title for word in exclude_words)
-        included = any(word in title for word in include_words)
+        included = bool(_include_term_matches(include_words, title))
         match_priority = 0 if included and not excluded else (2 if excluded else 1)
         new_priority = 0 if row["asin"] in newly_discovered_asins else 1
         return match_priority, new_priority, int(row.get("current_rank") or 9999), str(row.get("first_seen_at") or "")
@@ -170,7 +189,8 @@ def classify_candidate(project_id: str, product: dict[str, Any], today: date | N
         " ".join(product.get("about_items_json") or []),
     ]).casefold()
     excluded = [word for word in rule.get("exclude_keywords", []) if word in content]
-    included = [word for word in rule.get("include_keywords", []) if word in content]
+    include_keywords = rule.get("include_keywords", [])
+    included = _include_term_matches(include_keywords, content)
     available = product.get("date_first_available")
     age_days = None
     if available:
@@ -180,15 +200,59 @@ def classify_candidate(project_id: str, product: dict[str, Any], today: date | N
         status, reason = "too_old", f"上架已 {age_days} 天，达到或超过新品期限"
     elif excluded:
         status, reason = "not_same", f"命中排除关键词：{', '.join(excluded)}"
+    elif not include_keywords:
+        status, reason = "pending", "尚未配置同类关键词，等待设置筛选规则"
+    elif not content.strip():
+        status, reason = "pending", "尚未获取到可用于匹配的商品文案"
     elif not included:
-        status, reason = "pending", "未命中同类关键词，等待人工确认"
+        status, reason = "not_same", "未宽泛命中任何同类关键词，自动判定为非同类产品"
     elif age_days is None:
-        status, reason = "pending", f"命中同类关键词 {', '.join(included)}，但未获取到上架日期"
+        labels = ", ".join(f"{term}（规则：{keyword}）" for keyword, term in included)
+        status, reason = "pending", f"宽泛命中同类词 {labels}，但未获取到上架日期"
     elif age_days < 0:
         status, reason = "pending", "上架日期晚于当前日期，等待人工确认"
     else:
-        status, reason = "same", f"命中同类关键词：{', '.join(included)}；上架 {age_days} 天"
+        labels = ", ".join(f"{term}（规则：{keyword}）" for keyword, term in included)
+        status, reason = "same", f"宽泛命中同类词：{labels}；上架 {age_days} 天"
     return {"relevance_status": status, "classification_source": "auto", "relevance_reason": reason, "age_days": age_days}
+
+
+def refresh_automatic_classifications(
+    db: Database, project_id: str | None = None, today: date | None = None,
+) -> list[dict[str, Any]]:
+    """Reapply current rules to stored automatic candidates and return changed rows."""
+    parameters: tuple[Any, ...] = (project_id,) if project_id else ()
+    where = "WHERE classification_source='auto'"
+    if project_id:
+        where += " AND project_id=?"
+    rows = db.fetchall(f"SELECT * FROM bsr_new_candidates {where}", parameters)
+    changed: list[dict[str, Any]] = []
+    with db.connect() as connection:
+        for row in rows:
+            result = classify_candidate(row["project_id"], {
+                "title": row.get("title"),
+                "highlights_text": "",
+                "about_items_json": [],
+                "date_first_available": row.get("date_first_available"),
+            }, today)
+            comparable = (
+                result["relevance_status"], result["classification_source"],
+                result["relevance_reason"], result["age_days"],
+            )
+            existing = (
+                row.get("relevance_status"), row.get("classification_source"),
+                row.get("relevance_reason"), row.get("age_days"),
+            )
+            if comparable == existing:
+                continue
+            connection.execute(
+                """UPDATE bsr_new_candidates
+                   SET relevance_status=?,classification_source=?,relevance_reason=?,age_days=?
+                   WHERE project_id=? AND asin=?""",
+                (*comparable, row["project_id"], row["asin"]),
+            )
+            changed.append({**row, **result})
+    return changed
 
 
 def set_candidate_date(

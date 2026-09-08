@@ -11,12 +11,12 @@ from flask import Flask, jsonify, render_template, request, send_file, send_from
 
 from app.config import load_projects, load_settings
 from app.candidates import (
-    classify_candidate, create_candidate_alert, load_rules, mark_expired_candidates,
-    save_rules, set_candidate_date, set_manual_status,
+    create_candidate_alert, load_rules, mark_expired_candidates,
+    refresh_automatic_classifications, save_rules, set_candidate_date, set_manual_status,
 )
 from app.notifications.serverchan import (
-    has_sendkey, load_notification_config, save_notification_config, save_sendkey,
-    send_daily, send_test, send_weekly,
+    build_daily_summary, build_weekly_summary, has_sendkey, load_notification_config,
+    save_notification_config, save_sendkey, send_daily, send_test, send_weekly,
 )
 from app.paths import LOG_DIR, REPORT_DIR, ROOT, ensure_directories, report_filename
 from app.presentation import build_product_identities
@@ -146,8 +146,92 @@ def schedule_status():
 @app.get("/api/notification")
 def notification_config():
     db = Database()
-    logs = db.fetchall("SELECT * FROM notification_logs ORDER BY sent_at DESC LIMIT 10")
+    logs = db.fetchall(
+        """SELECT * FROM notification_logs
+           WHERE datetime(sent_at)>=datetime('now','-30 days')
+           ORDER BY sent_at DESC,id DESC"""
+    )
+    successful: set[tuple[str, str]] = set()
+    for row in logs:
+        row["has_body"] = bool(row.pop("body", None))
+        report_type = _notification_report_type(row)
+        key = (report_type, str(row["report_date"]))
+        row["report_type"] = report_type
+        row["retryable"] = bool(
+            not row["success"] and report_type in {"daily", "weekly"} and key not in successful
+        )
+        row["download_url"] = (
+            f"/reports/summary/{report_type}?date={row['report_date']}"
+            if report_type in {"daily", "weekly"} else None
+        )
+        if row["success"]:
+            successful.add(key)
     return jsonify({"ok": True, "config": load_notification_config(), "has_sendkey": has_sendkey(), "logs": logs})
+
+
+def _notification_report_type(row: dict) -> str:
+    if "collection_alert" in str(row.get("channel") or ""):
+        return "collection_alert"
+    return "weekly" if "周报" in str(row.get("title") or "") else "daily"
+
+
+@app.get("/api/notification/logs/<int:log_id>")
+def notification_log_detail(log_id: int):
+    db = Database()
+    rows = db.fetchall("SELECT * FROM notification_logs WHERE id=?", (log_id,))
+    if not rows:
+        return response_error(ValueError("发送记录不存在"), 404)
+    row = rows[0]
+    body = str(row.get("body") or "")
+    body_source = "stored" if body else "unavailable"
+    report_type = _notification_report_type(row)
+    if not body and report_type in {"daily", "weekly"}:
+        try:
+            target = date.fromisoformat(str(row["report_date"]))
+            if report_type == "weekly":
+                _, body, _ = build_weekly_summary(target)
+            else:
+                _, body, _ = build_daily_summary(target, load_notification_config()["max_items"])
+            body_source = "rebuilt"
+        except (TypeError, ValueError):
+            body = "历史发送记录没有保存简报正文，且当前数据已无法重新生成。"
+    elif not body and report_type == "collection_alert":
+        alerts = db.fetchall(
+            """SELECT body FROM collection_alerts
+               WHERE title=? AND substr(created_at,1,10)=? ORDER BY id DESC LIMIT 1""",
+            (row["title"], row["report_date"]),
+        )
+        body = str(alerts[0]["body"]) if alerts else "历史采集异常记录没有保存通知正文。"
+        body_source = "alert_queue" if alerts else "unavailable"
+    return jsonify({"ok": True, "row": {
+        **row, "report_type": report_type, "body": body, "body_source": body_source,
+    }})
+
+
+@app.post("/api/notification/logs/<int:log_id>/retry")
+def retry_notification(log_id: int):
+    db = Database()
+    rows = db.fetchall("SELECT * FROM notification_logs WHERE id=?", (log_id,))
+    if not rows:
+        return response_error(ValueError("发送记录不存在"), 404)
+    row = rows[0]
+    if row["success"]:
+        return response_error(ValueError("该简报已经发送成功，无需重发"))
+    report_type = _notification_report_type(row)
+    if report_type not in {"daily", "weekly"}:
+        return response_error(ValueError("采集异常通知会保留在待发队列，并在下次定时采集时自动补发"))
+    later_logs = db.fetchall(
+        "SELECT * FROM notification_logs WHERE id>? AND report_date=? AND success=1 ORDER BY id",
+        (log_id, row["report_date"]),
+    )
+    if any(_notification_report_type(item) == report_type for item in later_logs):
+        return response_error(ValueError("该周期简报后来已经补发成功"))
+    try:
+        target = date.fromisoformat(str(row["report_date"]))
+        result = send_weekly(target, force=True) if report_type == "weekly" else send_daily(target, force=True)
+        return jsonify({"ok": True, "report_type": report_type, **result})
+    except Exception as exc:
+        return response_error(exc)
 
 
 @app.put("/api/notification")
@@ -203,6 +287,20 @@ def notification_schedule_status():
 def new_products():
     db = Database()
     mark_expired_candidates(db)
+    changed = refresh_automatic_classifications(db)
+    latest_runs: dict[str, str | None] = {}
+    for row in changed:
+        if row["relevance_status"] != "same":
+            continue
+        project_id = str(row["project_id"])
+        if project_id not in latest_runs:
+            latest = db.fetchall(
+                "SELECT run_id FROM collection_runs WHERE project_id=? ORDER BY started_at DESC LIMIT 1",
+                (project_id,),
+            )
+            latest_runs[project_id] = latest[0]["run_id"] if latest else None
+        if latest_runs[project_id]:
+            create_candidate_alert(db, latest_runs[project_id], project_id, row["asin"])
     projects = {item.project_id: item for item in load_projects()}
     identities = {project_id: build_product_identities(db, project_id) for project_id in projects}
     rows = db.fetchall("SELECT * FROM bsr_new_candidates ORDER BY first_seen_at DESC")
@@ -222,16 +320,10 @@ def update_new_product_rules():
             raise ValueError("新品规则中包含不存在的产品项目")
         cleaned = save_rules(rules)
         db = Database()
-        for row in db.fetchall("SELECT * FROM bsr_new_candidates WHERE classification_source='auto'"):
-            result = classify_candidate(row["project_id"], {
-                "title": row.get("title"), "date_first_available": row.get("date_first_available"),
-                "highlights_text": "", "about_items_json": [],
-            })
-            with db.connect() as connection:
-                connection.execute(
-                    "UPDATE bsr_new_candidates SET relevance_status=?,relevance_reason=?,age_days=? WHERE project_id=? AND asin=?",
-                    (result["relevance_status"], result["relevance_reason"], result["age_days"], row["project_id"], row["asin"]),
-                )
+        refresh_automatic_classifications(db)
+        for row in db.fetchall(
+            "SELECT * FROM bsr_new_candidates WHERE classification_source='auto' AND relevance_status='same'"
+        ):
             latest = db.fetchall("SELECT run_id FROM collection_runs WHERE project_id=? ORDER BY started_at DESC LIMIT 1", (row["project_id"],))
             if latest:
                 create_candidate_alert(db, latest[0]["run_id"], row["project_id"], row["asin"])
@@ -357,7 +449,10 @@ def reports():
 @app.get("/reports/summary/<report_type>")
 def download_summary(report_type: str):
     if report_type == "daily":
-        target = date.today() - timedelta(days=1)
+        try:
+            target = date.fromisoformat(request.args["date"]) if request.args.get("date") else date.today() - timedelta(days=1)
+        except ValueError:
+            return response_error(ValueError("日报日期格式无效"))
         payload = build_daily_excel_report(target)
         filename = f"Amazon竞品日报_{target.isoformat()}.xlsx"
         return send_file(
@@ -367,7 +462,12 @@ def download_summary(report_type: str):
             download_name=filename,
         )
     elif report_type == "weekly":
-        target = date.today() - timedelta(days=date.today().weekday() + 1)
+        try:
+            target = date.fromisoformat(request.args["date"]) if request.args.get("date") else date.today() - timedelta(days=date.today().weekday() + 1)
+        except ValueError:
+            return response_error(ValueError("周报日期格式无效"))
+        if target.weekday() != 6:
+            return response_error(ValueError("周报截止日期必须是周日"))
         week_start = target - timedelta(days=6)
         payload = build_weekly_excel_report(target)
         filename = f"Amazon竞品周报_{week_start.isoformat()}至{target.isoformat()}.xlsx"

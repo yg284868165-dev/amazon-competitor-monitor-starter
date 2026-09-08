@@ -39,6 +39,65 @@ def test_candidate_classification_requires_same_type_and_recent_listing(monkeypa
     assert excluded["relevance_status"] == "not_same"
 
 
+def test_candidate_include_phrase_broad_matches_any_word_and_rejects_no_match(monkeypatch):
+    monkeypatch.setattr(candidates, "load_rules", lambda: {
+        "p": {"include_keywords": ["sample widget"], "exclude_keywords": [], "max_age_days": 90}
+    })
+    widget_only = candidates.classify_candidate("p", {
+        "title": "Natural Widget Cleaner", "highlights_text": "", "about_items_json": [],
+        "date_first_available": "2026-08-20",
+    }, date(2026, 9, 1))
+    sample_only = candidates.classify_candidate("p", {
+        "title": "Sample Cleaning Tool", "highlights_text": "", "about_items_json": [],
+        "date_first_available": "2026-08-20",
+    }, date(2026, 9, 1))
+    unrelated = candidates.classify_candidate("p", {
+        "title": "Kitchen Scrub Pad", "highlights_text": "", "about_items_json": [],
+        "date_first_available": None,
+    }, date(2026, 9, 1))
+
+    assert widget_only["relevance_status"] == "same"
+    assert "widget（规则：sample widget）" in widget_only["relevance_reason"]
+    assert sample_only["relevance_status"] == "same"
+    assert unrelated["relevance_status"] == "not_same"
+    assert "自动判定为非同类" in unrelated["relevance_reason"]
+
+
+def test_candidate_without_configured_include_keywords_stays_pending(monkeypatch):
+    monkeypatch.setattr(candidates, "load_rules", lambda: {
+        "p": {"include_keywords": [], "exclude_keywords": [], "max_age_days": 90}
+    })
+    result = candidates.classify_candidate("p", {
+        "title": "Any Product", "highlights_text": "", "about_items_json": [],
+        "date_first_available": "2026-08-20",
+    }, date(2026, 9, 1))
+    assert result["relevance_status"] == "pending"
+    assert "尚未配置" in result["relevance_reason"]
+
+
+def test_refresh_automatic_candidates_applies_new_broad_rule(monkeypatch, tmp_path):
+    monkeypatch.setattr(candidates, "load_rules", lambda: {
+        "p": {"include_keywords": ["sample widget"], "exclude_keywords": [], "max_age_days": 90}
+    })
+    db = Database(tmp_path / "test.db")
+    for asin, title in (("B000000001", "Natural Widget Cleaner"), ("B000000002", "Kitchen Scrub Pad")):
+        db.upsert_candidate({
+            "project_id": "p", "asin": asin, "first_seen_at": "2026-09-01T08:00:00",
+            "last_seen_at": "2026-09-01T08:00:00", "title": title,
+            "date_first_available": "2026-08-20", "relevance_status": "pending",
+            "classification_source": "auto", "relevance_reason": "old",
+        })
+
+    changed = candidates.refresh_automatic_classifications(db, today=date(2026, 9, 1))
+    stored = db.fetchall("SELECT asin,relevance_status FROM bsr_new_candidates ORDER BY asin")
+
+    assert {row["asin"] for row in changed} == {"B000000001", "B000000002"}
+    assert stored == [
+        {"asin": "B000000001", "relevance_status": "same"},
+        {"asin": "B000000002", "relevance_status": "not_same"},
+    ]
+
+
 def test_only_qualified_candidate_creates_alert(monkeypatch):
     monkeypatch.setattr(candidates, "load_rules", lambda: {"p": {"max_age_days": 90}})
     monkeypatch.setattr(candidates, "load_competitors", lambda project_id, include_disabled=False: [])

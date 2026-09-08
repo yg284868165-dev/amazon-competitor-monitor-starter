@@ -2,6 +2,7 @@ from datetime import date
 
 import app.notifications.serverchan as serverchan
 import notify_schedule
+import pytest
 from app.config import Project
 from app.notifications.serverchan import (
     _collapse_daily_events, _daily_change_items, _weekly_rating_changes,
@@ -31,6 +32,43 @@ def test_notification_launch_agent_runs_separate_weekly_summary_monday_at_ten():
     assert value["StartCalendarInterval"] == {"Weekday": 1, "Hour": 10, "Minute": 0}
     assert value["ProgramArguments"][-2].endswith("/notify.py")
     assert value["ProgramArguments"][-1] == "weekly"
+
+
+def test_notification_history_stores_briefing_body(tmp_path):
+    db = Database(tmp_path / "test.db")
+    db.record_notification(
+        "2026-09-01", False, "Amazon竞品昨日监控｜9月1日", 3,
+        "网络不可达", body="## 原始日报\n\n- 变化内容",
+    )
+
+    row = db.fetchall("SELECT * FROM notification_logs")[0]
+    assert row["success"] == 0
+    assert row["body"] == "## 原始日报\n\n- 变化内容"
+
+
+def test_failed_daily_send_keeps_exact_generated_body(monkeypatch, tmp_path):
+    db = Database(tmp_path / "test.db")
+    monkeypatch.setattr(serverchan, "Database", lambda: db)
+    monkeypatch.setattr(serverchan, "load_notification_config", lambda: {
+        "enabled": True, "send_when_no_changes": True, "max_items": 15,
+    })
+    monkeypatch.setattr(
+        serverchan, "build_daily_summary",
+        lambda *_: ("测试日报", "## 测试日报\n\n- 精确正文", 1),
+    )
+    monkeypatch.setattr(
+        serverchan, "send_serverchan",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    with pytest.raises(RuntimeError, match="offline"):
+        serverchan.send_daily(date(2026, 9, 1), force=True)
+
+    row = db.fetchall("SELECT success,response_message,body FROM notification_logs")[0]
+    assert row == {
+        "success": 0, "response_message": "offline",
+        "body": "## 测试日报\n\n- 精确正文",
+    }
 
 
 def _insert_change(db, event_id, field_name, old_value, new_value, event_time, asin="B000000001"):

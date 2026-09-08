@@ -28,6 +28,7 @@ def test_recovered_scheduled_failure_is_queued_and_sent_once(monkeypatch, tmp_pa
     assert alerts.flush_pending_collection_alerts(db) == {"sent": 1, "pending": 0}
     assert "异常已恢复" in sent[0][0]
     assert "无需人工操作" in sent[0][1]
+    assert "无需人工操作" in db.fetchall("SELECT body FROM notification_logs")[0]["body"]
     assert alerts.flush_pending_collection_alerts(db) == {"sent": 0, "pending": 0}
 
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Amazon 竞品监控</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%23176b4d%22/><path d=%22M18 20h28v7H18zm0 12h20v7H18zm0 12h28v7H18z%22 fill=%22white%22/></svg>">
-  <link rel="stylesheet" href="/static/app.css?v=20260907-wake-checklist">
+  <link rel="stylesheet" href="/static/app.css?v=20260908-briefing-wake">
 </head>
 <body>
   <header>
@@ -98,24 +98,28 @@
         <pre id="notificationOutput"></pre>
       </article>
       <article class="surface">
-        <div class="section-title"><div><h2>最近发送记录</h2><p>这里只记录发送结果，不保存 SendKey。</p></div><button class="ghost" id="refreshNotification">刷新</button></div>
+        <div class="section-title"><div><h2>最近30天发送记录</h2><p>发送失败的日报或周报可以查看简报、下载对应 Excel，并在网络恢复后重新发送；升级前未留存正文的旧记录会明确标记为根据现存数据重建。这里不保存 SendKey。</p></div><button class="ghost" id="refreshNotification">刷新</button></div>
         <div class="table-wrap"><table id="notificationLogs"><thead></thead><tbody></tbody></table></div>
+        <div id="notificationPreview" class="notification-preview" hidden>
+          <div class="section-title"><h3 id="notificationPreviewTitle">简报内容</h3><button class="ghost" id="closeNotificationPreview">关闭</button></div>
+          <pre id="notificationPreviewBody"></pre>
+        </div>
       </article>
     </section>
 
     <section id="newProducts" class="panel">
       <article class="surface">
-        <div class="section-title"><div><h2>新竞争对手筛选规则</h2><p>BSR前100中未加入监控列表的ASIN，按同类关键词和上架天数筛选；关键词使用逗号或换行分隔。</p></div><button class="primary" id="saveNewProductRules">保存规则</button></div>
+        <div class="section-title"><div><h2>新竞争对手筛选规则</h2><p>BSR前100中未加入监控列表的ASIN，按同类关键词和上架天数筛选；包含关键词按单词宽泛匹配，短语中任意一个词命中即可。</p></div><button class="primary" id="saveNewProductRules">保存规则</button></div>
         <div id="newProductRules" class="rule-list"></div>
       </article>
       <article class="surface">
         <div class="section-title"><div><h2>BSR新竞争对手候选</h2><p>只有同类、上架时间小于设定天数且未在监控ASIN列表中的商品才会提醒。</p></div><button class="ghost" id="refreshNewProducts">刷新</button></div>
-        <div class="form-row filter-row"><label>产品项目<select id="newProductProjectFilter"></select></label><label>筛选状态<select id="newProductStatusFilter"><option value="all">全部状态</option><option value="pending">待确认</option><option value="same">同类竞品</option><option value="not_same">非同类产品</option><option value="too_old">超过3个月</option></select></label></div>
+        <div class="form-row filter-row"><label>产品项目<select id="newProductProjectFilter"></select></label><label>筛选状态<select id="newProductStatusFilter"><option value="all">全部状态</option><option value="pending">待确认</option><option value="same">同类竞品</option><option value="not_same">非同类产品</option><option value="too_old">超过新品期限</option></select></label></div>
         <div class="table-wrap"><table id="newProductTable"><thead></thead><tbody></tbody></table></div>
       </article>
     </section>
   </main>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260907-ad-alerts"></script>
+  <script src="/static/app.js?v=20260908-briefing-source"></script>
 </body>
 </html>

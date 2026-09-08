@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS collection_task_outcomes (
 CREATE TABLE IF NOT EXISTS notification_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, report_date TEXT NOT NULL, channel TEXT NOT NULL,
     sent_at TEXT NOT NULL, success INTEGER NOT NULL, title TEXT NOT NULL,
-    item_count INTEGER DEFAULT 0, response_message TEXT
+    item_count INTEGER DEFAULT 0, response_message TEXT, body TEXT
 );
 CREATE TABLE IF NOT EXISTS collection_alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT, source_run_id TEXT NOT NULL UNIQUE,
@@ -151,6 +151,9 @@ class Database:
         event_columns = {row[1] for row in connection.execute("PRAGMA table_info(change_events)")}
         if "details_json" not in event_columns:
             connection.execute("ALTER TABLE change_events ADD COLUMN details_json TEXT")
+        notification_columns = {row[1] for row in connection.execute("PRAGMA table_info(notification_logs)")}
+        if "body" not in notification_columns:
+            connection.execute("ALTER TABLE notification_logs ADD COLUMN body TEXT")
         connection.execute(
             "UPDATE bsr_new_candidates SET date_source='auto' "
             "WHERE date_first_available IS NOT NULL AND date_source IS NULL"
@@ -254,12 +257,17 @@ class Database:
 
     def record_notification(
         self, report_date: str, success: bool, title: str, item_count: int,
-        response_message: str, channel: str = "serverchan",
+        response_message: str, channel: str = "serverchan", body: str | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO notification_logs(report_date,channel,sent_at,success,title,item_count,response_message) VALUES(?,?,?,?,?,?,?)",
-                (report_date, channel, datetime.now().isoformat(timespec="seconds"), int(success), title, item_count, response_message),
+                """INSERT INTO notification_logs(
+                       report_date,channel,sent_at,success,title,item_count,response_message,body
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    report_date, channel, datetime.now().isoformat(timespec="seconds"),
+                    int(success), title, item_count, response_message, body,
+                ),
             )
 
     def queue_collection_alert(
