@@ -68,7 +68,7 @@ git commit -m "说明本次改动"
 git push
 ```
 
-GitHub 仓库保留源码、测试、文档和配置。`data/monitor.db`、锁文件、日志、诊断截图/HTML、生成报告、虚拟环境和缓存由 `.gitignore` 排除，因此 GitHub 备份不包含采集历史数据。Server酱 SendKey 仍只保存在 macOS 钥匙串。
+GitHub 仓库保留源码、测试、文档、配置及可直接双击使用的签名 macOS App 启动器。`data/monitor.db`、锁文件、日志、诊断截图/HTML、生成报告、虚拟环境和缓存由 `.gitignore` 排除，因此 GitHub 备份不包含采集历史数据。Server酱 SendKey 仍只保存在 macOS 钥匙串。
 
 ## 手动执行
 
@@ -150,7 +150,7 @@ BSR前100中的每个ASIN都会按当前榜单重新检查，不再要求它必�
 .venv/bin/python schedule.py install
 ```
 
-建议直接在管理页面修改并点击“安装 / 更新”。启用自动唤醒时，首次安装会弹出 macOS 管理员密码窗口；系统为每次采集提前唤醒。LaunchAgent 直接启动 Python，Python 启动后再通过 `caffeinate` 阻止整机睡眠。修改时间、任务或自动唤醒设置后，都需要再点一次“安装 / 更新”，让系统载入新计划。其他命令：
+建议直接在管理页面修改并点击“安装 / 更新”。启用自动唤醒时，首次安装会弹出 macOS 管理员密码窗口；系统为每次采集提前唤醒。采集 LaunchAgent 通过 `scheduled_runner.py` 登记计划时段后再启动 Python，同一时段即使被守护检查重复唤起也只会采集一次；登录时会自动检查最近计划时段。Python 启动后再通过 `caffeinate` 阻止整机睡眠。修改时间、任务或自动唤醒设置后，都需要再点一次“安装 / 更新”，让系统载入新计划。其他命令：
 
 ```bash
 .venv/bin/python schedule.py status
@@ -159,7 +159,7 @@ BSR前100中的每个ASIN都会按当前榜单重新检查，不再要求它必�
 .venv/bin/python schedule.py uninstall
 ```
 
-安装后请先运行 `permission-test`。它使用真实 LaunchAgent 验证后台 Python 能否读取 Desktop 项目和 macOS 钥匙串，但不会访问 Amazon 或发送微信。再运行 `status`，确认输出中的“系统状态”和“自动唤醒”都是“已安装”。定时日志位于 `output/logs/scheduler.stdout.log` 和 `scheduler.stderr.log`。程序带非阻塞锁，如果上一次任务尚未完成，下一个时间点不会同时启动第二份采集。
+安装后请先运行 `permission-test`。它使用真实 LaunchAgent 验证后台 Python 能否读取 Desktop 项目和 macOS 钥匙串，但不会访问 Amazon 或发送微信。再运行 `status`，确认输出中的“系统状态”、“自动唤醒”和“重启自愈守护”都是“已安装”。详细采集日志仍位于 `output/logs/monitor_日期.log`；launchd 启动诊断位于 `~/Library/Logs/AmazonCompetitorMonitor/`，避免重启后因 Desktop 隐私权限导致任务在 Python 启动前失败。程序带非阻塞锁，如果上一次任务尚未完成，下一个时间点不会同时启动第二份采集。启用自动唤醒后，系统级唤醒守护会在每个时段前检查用户采集任务是否仍已载入，并在5分钟后做一次幂等兜底唤起；延迟唤起会发送说明。完全错过且已超过10分钟补跑窗口的时段，会按项目生成可手动重试的失败批次，并进入采集异常通知队列。
 
 ## 微信日报与周报
 
@@ -185,7 +185,7 @@ Coupon、Deal 或企业价从有内容变为空时会明确提示活动取消。
 .venv/bin/python notify_schedule.py uninstall
 ```
 
-日报日志位于 `output/logs/notification.stdout.log` 和 `notification.stderr.log`，周报日志位于 `weekly-notification.stdout.log` 和 `weekly-notification.stderr.log`。日报或周报遇到网络、TLS、超时或响应解析异常时，会在初次失败后等待30秒、2分钟和5分钟各自动重试一次；明确的SendKey或接口业务错误不会重试。中间失败不会产生多条发送记录，只有最终成功或连续4次失败的结果会写入历史。正文留存功能上线后，每次发送的结果和当时生成的简报正文会同时记录在数据库的 `notification_logs` 表中，并保留最近30天。在管理页面“微信通知 → 最近30天发送记录”可以查看正文；升级前没有保存正文的旧记录会根据当前仍保留的数据重新生成并明确标记，可能与当时实际发送版本略有差异。日报和周报可以下载对应日期的 Excel，发送失败时会显示“重新发送”。采集异常通知失败后仍由待发队列自动补发。微信消息只提供简短摘要，本机 Excel 报告不会上传到 Server酱。
+日报和周报的 launchd 启动日志同样位于 `~/Library/Logs/AmazonCompetitorMonitor/`。日报或周报遇到网络、TLS、超时或响应解析异常时，会在初次失败后等待30秒、2分钟和5分钟各自动重试一次；明确的SendKey或接口业务错误不会重试。中间失败不会产生多条发送记录，只有最终成功或连续4次失败的结果会写入历史。正文留存功能上线后，每次发送的结果和当时生成的简报正文会同时记录在数据库的 `notification_logs` 表中，并保留最近30天。在管理页面“微信通知 → 最近30天发送记录”可以查看正文；升级前没有保存正文的旧记录会根据当前仍保留的数据重新生成并明确标记，可能与当时实际发送版本略有差异。日报和周报可以下载对应日期的 Excel，发送失败时会显示“重新发送”。采集异常通知失败后仍由待发队列自动补发。微信消息只提供简短摘要，本机 Excel 报告不会上传到 Server酱。
 
 ## 配置清单
 

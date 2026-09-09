@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from app.notifications.serverchan import has_sendkey, load_notification_config
-from app.paths import LOG_DIR, ROOT, ensure_directories
+from app.paths import LAUNCHD_LOG_DIR, ROOT, ensure_directories
 
 DAILY_LABEL = "com.amazon.competitor-monitor.notification"
 WEEKLY_LABEL = "com.amazon.competitor-monitor.weekly-notification"
@@ -36,8 +36,8 @@ def plist_data(config: dict, report_type: str = "daily") -> dict:
         "WorkingDirectory": str(ROOT),
         "StartCalendarInterval": calendar,
         "RunAtLoad": False,
-        "StandardOutPath": str(LOG_DIR / stdout_name),
-        "StandardErrorPath": str(LOG_DIR / stderr_name),
+        "StandardOutPath": str(LAUNCHD_LOG_DIR / stdout_name),
+        "StandardErrorPath": str(LAUNCHD_LOG_DIR / stderr_name),
         "ProcessType": "Interactive",
     }
 
@@ -51,6 +51,7 @@ def _install_agent(domain: str, path: Path, value: dict) -> None:
 
 def install() -> None:
     ensure_directories()
+    LAUNCHD_LOG_DIR.mkdir(parents=True, exist_ok=True)
     config = load_notification_config()
     if not config["enabled"]:
         raise RuntimeError("请先启用微信通知配置")

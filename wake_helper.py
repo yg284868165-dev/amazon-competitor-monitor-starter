@@ -10,6 +10,7 @@ BASE_DIR = Path("/Library/Application Support/AmazonCompetitorMonitor")
 CONFIG_PATH = BASE_DIR / "wake.json"
 STATE_PATH = BASE_DIR / "wake-state.json"
 OWNER = "com.amazon.competitor-monitor.wake"
+LAUNCHCTL = "/bin/launchctl"
 
 
 def _load(path: Path, default):
@@ -51,6 +52,51 @@ def schedule_days(offsets: list[int]) -> None:
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _console_user_id() -> int | None:
+    result = subprocess.run(
+        ["/usr/bin/stat", "-f", "%u", "/dev/console"], capture_output=True, text=True,
+    )
+    try:
+        value = int(result.stdout.strip()) if result.returncode == 0 else 0
+    except ValueError:
+        value = 0
+    return value if value >= 500 else None
+
+
+def _within_recovery_window(now: datetime, config: dict) -> bool:
+    delay = int(config.get("recovery_delay_minutes", 5))
+    current = now.hour * 60 + now.minute
+    for value in config.get("times", []):
+        hour, minute = map(int, value.split(":"))
+        scheduled = hour * 60 + minute
+        if (current - scheduled) % (24 * 60) in {delay, delay + 1}:
+            return True
+    return False
+
+
+def ensure_collection_agent(now: datetime | None = None) -> bool:
+    config = _load(CONFIG_PATH, {})
+    expected_user_id = int(config.get("user_id", 0))
+    console_user_id = _console_user_id()
+    if not expected_user_id or console_user_id != expected_user_id:
+        return False
+    label = str(config.get("agent_label") or "")
+    plist = Path(str(config.get("agent_plist") or ""))
+    if not label or not plist.is_file():
+        return False
+    domain = f"gui/{expected_user_id}"
+    target = f"{domain}/{label}"
+    status = subprocess.run([LAUNCHCTL, "print", target], capture_output=True)
+    if status.returncode != 0:
+        subprocess.run([LAUNCHCTL, "enable", target], capture_output=True)
+        loaded = subprocess.run([LAUNCHCTL, "bootstrap", domain, str(plist)], capture_output=True)
+        if loaded.returncode != 0:
+            return False
+    if _within_recovery_window(now or datetime.now(), config):
+        subprocess.run([LAUNCHCTL, "kickstart", target], capture_output=True)
+    return True
+
+
 def cancel() -> None:
     state = _load(STATE_PATH, {"events": []})
     for event in state.get("events", []):
@@ -65,6 +111,7 @@ def main() -> None:
         schedule_days([0, 1, 2])
     elif command == "daily":
         schedule_days([2])
+        ensure_collection_agent()
     elif command == "cancel":
         cancel()
     else:

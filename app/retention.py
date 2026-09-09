@@ -20,6 +20,7 @@ TIMED_TABLES = {
     "bsr_new_candidates": "last_seen_at",
     "notification_logs": "sent_at",
     "collection_alerts": "created_at",
+    "scheduled_executions": "claimed_at",
 }
 
 

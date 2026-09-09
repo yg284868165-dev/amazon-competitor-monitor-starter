@@ -14,7 +14,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from app.paths import CONFIG_DIR, DATA_DIR, LOG_DIR, ROOT, ensure_directories
+from app.paths import CONFIG_DIR, DATA_DIR, LAUNCHD_LOG_DIR, LOG_DIR, ROOT, ensure_directories
+from app.scheduling import activate_schedule, deactivate_schedule
+from app.storage.database import Database
 
 LABEL = "com.amazon.competitor-monitor"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
@@ -48,20 +50,24 @@ def plist_data(config: dict) -> dict:
     python = ROOT / ".venv" / "bin" / "python"
     return {
         "Label": LABEL,
+        "Program": str(python),
         "ProgramArguments": [
-            str(python), str(ROOT / "run.py"), config.get("task", "all"),
-            "--project", config.get("project", "all"), "--scheduled",
+            str(python), str(ROOT / "scheduled_runner.py"),
         ],
         "WorkingDirectory": str(ROOT),
         "StartCalendarInterval": config["calendar"],
-        "RunAtLoad": False,
-        "StandardOutPath": str(LOG_DIR / "scheduler.stdout.log"),
-        "StandardErrorPath": str(LOG_DIR / "scheduler.stderr.log"),
+        # 登录后运行一次轻量检查：只补记/补跑遗漏时段，不会重复执行已登记时段。
+        "RunAtLoad": True,
+        # launchd 必须先打开重定向文件才能启动 Python。不要放在受 TCC 保护的 Desktop 项目内，
+        # 否则电脑重启后可能在应用代码运行前直接报 EX_CONFIG(78)。
+        "StandardOutPath": str(LAUNCHD_LOG_DIR / "scheduler.stdout.log"),
+        "StandardErrorPath": str(LAUNCHD_LOG_DIR / "scheduler.stderr.log"),
         "ProcessType": "Interactive",
     }
 
 
 def install_agent(config: dict) -> None:
+    LAUNCHD_LOG_DIR.mkdir(parents=True, exist_ok=True)
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     with PLIST_PATH.open("wb") as handle:
         plistlib.dump(plist_data(config), handle, sort_keys=False)
@@ -75,14 +81,25 @@ def _administrator(command: list[str]) -> None:
     subprocess.run(["/usr/bin/osascript", "-e", f'do shell script "{shell_command}" with administrator privileges'], check=True)
 
 
-def _wake_plist_data(python: str) -> dict:
+def _clock_offset(value: str, minutes: int) -> dict[str, int]:
+    hour, minute = (int(part) for part in value.split(":"))
+    total = (hour * 60 + minute + minutes) % (24 * 60)
+    return {"Hour": total // 60, "Minute": total % 60}
+
+
+def _wake_plist_data(python: str, config: dict) -> dict:
     helper = WAKE_BASE_DIR / "wake_helper.py"
     log_dir = Path("/Library/Logs/AmazonCompetitorMonitor")
+    calendar = [{"Hour": 0, "Minute": 10}]
+    for value in config["times"]:
+        # 提前确认任务已经载入；计划时间后再兜底唤起一次，入口会防止重复采集。
+        calendar.extend((_clock_offset(value, -1), _clock_offset(value, 5)))
+    calendar = list({(item["Hour"], item["Minute"]): item for item in calendar}.values())
     return {
         "Label": WAKE_LABEL,
         "ProgramArguments": [python, str(helper), "daily"],
-        "StartCalendarInterval": {"Hour": 0, "Minute": 10},
-        "RunAtLoad": False,
+        "StartCalendarInterval": calendar,
+        "RunAtLoad": True,
         "StandardOutPath": str(log_dir / "wake.stdout.log"),
         "StandardErrorPath": str(log_dir / "wake.stderr.log"),
     }
@@ -97,9 +114,16 @@ def install_wake(config: dict) -> None:
         plist_path = Path(temp_dir) / "wake.plist"
         shutil.copy2(ROOT / "wake_admin.py", admin_path)
         shutil.copy2(ROOT / "wake_helper.py", helper_path)
-        config_path.write_text(json.dumps({"times": config["times"], "lead_minutes": config.get("wake_lead_minutes", 5)}, ensure_ascii=False), encoding="utf-8")
+        config_path.write_text(json.dumps({
+            "times": config["times"],
+            "lead_minutes": config.get("wake_lead_minutes", 5),
+            "user_id": os.getuid(),
+            "agent_label": LABEL,
+            "agent_plist": str(PLIST_PATH),
+            "recovery_delay_minutes": 5,
+        }, ensure_ascii=False), encoding="utf-8")
         with plist_path.open("wb") as handle:
-            plistlib.dump(_wake_plist_data(python), handle, sort_keys=False)
+            plistlib.dump(_wake_plist_data(python, config), handle, sort_keys=False)
         _administrator([python, str(admin_path), "install", str(helper_path), str(config_path), str(plist_path), python])
 
 
@@ -128,6 +152,7 @@ def install() -> None:
             except OSError:
                 pass
     install_agent(config)
+    activate_schedule(Database(), config)
     if config.get("wake_enabled"):
         install_wake(config)
     print(f"已安装: {PLIST_PATH}")
@@ -136,7 +161,7 @@ def install() -> None:
     if config.get("wake_enabled"):
         print("可靠运行提醒: 保持用户登录，请使用睡眠而非关机或退出登录；MacBook 建议连接电源并保持开盖。")
         print("下一步: 运行 .venv/bin/python schedule.py permission-test")
-        print("然后运行: .venv/bin/python schedule.py status，确认系统状态和自动唤醒均为已安装。")
+        print("然后运行: .venv/bin/python schedule.py status，确认系统状态、自动唤醒和重启自愈守护均为已安装。")
 
 
 def uninstall() -> None:
@@ -146,6 +171,7 @@ def uninstall() -> None:
         PLIST_PATH.unlink()
     if WAKE_PLIST_PATH.exists():
         uninstall_wake()
+    deactivate_schedule(Database())
     print("定时任务已卸载；配置和历史数据未删除")
 
 
@@ -156,8 +182,16 @@ def status() -> None:
     print("任务:", config.get("task", "all"), "项目:", config.get("project", "all"))
     result = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"], capture_output=True, text=True)
     print("系统状态:", "已安装" if result.returncode == 0 else "未安装")
+    print("启动日志:", LAUNCHD_LOG_DIR)
     wake_result = subprocess.run(["launchctl", "print", f"system/{WAKE_LABEL}"], capture_output=True, text=True)
     print("自动唤醒:", "已安装" if wake_result.returncode == 0 else "未安装", f"（提前 {config.get('wake_lead_minutes', 5)} 分钟）" if config.get("wake_enabled") else "")
+    installed_helper = WAKE_BASE_DIR / "wake_helper.py"
+    guard_current = bool(
+        wake_result.returncode == 0 and installed_helper.exists()
+        and installed_helper.read_bytes() == (ROOT / "wake_helper.py").read_bytes()
+    )
+    if config.get("wake_enabled"):
+        print("重启自愈守护:", "已安装" if guard_current else "待更新（请重新安装并完成管理员授权）")
 
 
 def run_now() -> int:
@@ -171,6 +205,7 @@ def reload_agent() -> None:
     if not config.get("enabled"):
         raise RuntimeError("定时采集配置尚未启用")
     install_agent(config)
+    activate_schedule(Database(), config)
     print("采集 LaunchAgent 已重新加载（自动唤醒配置未改动）")
 
 

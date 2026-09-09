@@ -43,7 +43,7 @@ Python 3.11、Flask、Playwright、BeautifulSoup、SQLite、openpyxl；前端是
 - 新品雷达允许人工填写或清空候选上架日期，保存后必须重算年龄与筛选状态；候选日期来源使用 `date_source=auto/manual` 区分，人工日期不得被普通候选补采覆盖。
 - `config/new_product_rules.json` 是各项目新品同类关键词、排除关键词和最大上架天数的配置真源。
 - `config/settings.json` 的 `retention` 节点控制自动清理：数据库历史、异常诊断和日志统一滚动保留30天；每次采集或重试前执行，固定Excel报告不删除。
-- Git 只跟踪源码、测试、文档和配置；数据库、日志、诊断文件、生成报告、虚拟环境和缓存必须继续被 `.gitignore` 排除。
+- Git 跟踪源码、测试、文档、配置及用户直接启动所需的签名 macOS App 包；数据库、日志、诊断文件、生成报告、虚拟环境和缓存必须继续被 `.gitignore` 排除。
 - 如所在网络的 GitHub HTTPS Git 通道不可用，可将 `origin` 改为 GitHub SSH 443 端口地址；macOS 11 上使用兼容的 GitHub CLI 2.76.2，不要盲目升级到要求 macOS 12 的版本。
 - 不接入 Amazon API，不绕过验证码；遇到验证码或榜单不完整时保留诊断文件。
 - Amazon 邮编初始化遇到瞬时导航中止时按 `settings.json` 的 `initialization_attempts` 重试，不能因单次 `ERR_ABORTED` 直接结束整批任务。
@@ -51,10 +51,12 @@ Python 3.11、Flask、Playwright、BeautifulSoup、SQLite、openpyxl；前端是
 - 每个正常/重试批次必须在创建 `BrowserManager` 前把完整目标清单预写入 `collection_task_outcomes`；这样断网发生在首个页面或邮编初始化阶段时，手动及自动重试仍能恢复全部目标。历史无清单失败批次从当前启用配置按原任务类型重建。
 - BSR 单页需先滚动并按 `bestseller.render_wait_seconds` 动态等待至少48条；整轮部分失败后按 `auto_retry.delay_seconds` 等待并自动精准重试一次，人工已处理时应跳过，禁止无限重试。
 - 只有 LaunchAgent 以 `--scheduled` 启动的自动采集才发送异常通知；应等待自动重试结束后区分“已恢复/仍失败”。Server酱不可达时通知写入 `collection_alerts` 队列，由后续定时采集补发，不得因告警失败中断采集。
+- 定时采集 LaunchAgent 必须通过 `scheduled_runner.py` 登记计划时段并防止守护补唤起造成重复采集；登录时运行轻量漏执行检查。启用自动唤醒后，系统级 wake helper 在计划前1分钟补载用户 LaunchAgent、计划后5分钟幂等 kickstart。延迟2分钟以上需进入异常通知；超过10分钟仍未执行的时段按项目生成带完整目标清单、可人工重试的失败批次。
+- 所有用户 LaunchAgent 的 `StandardOutPath`/`StandardErrorPath` 必须放在 `~/Library/Logs/AmazonCompetitorMonitor/`，不可放回 Desktop 项目的 `output/logs`；后者会让 macOS 重启后的 launchd 在 Python 启动前因 TCC 重定向权限返回 `EX_CONFIG(78)`。采集详细日志仍由 `run.py` 写入项目中的按日 `monitor_*.log`。
 - 日报、周报和采集异常每次发送都应把当时生成的正文保存到 `notification_logs.body`，并按30天保留。管理页须允许查看历史正文和下载对应周期 Excel；失败的日报/周报可人工重发，后来已经成功补发的旧失败记录不可重复发送。采集异常继续使用 `collection_alerts` 自动补发，不走简报人工重发接口。
 - 日报和周报遇到网络、TLS、超时或响应解析异常时，初次失败后按30秒、120秒、300秒退避重试；明确的Server酱接口业务错误不重试。一次发送过程只写入一条最终结果，重试成功时须在结果说明中标明。
 - 不手工修改子配置中的既有 `project_id`；项目改名应从管理页面级联 Excel 子配置、新品规则、数据库和指定项目的定时配置。
 
 ## 当前状态与下一步
 
-当前支持多项目、批量录入、组合筛选、五页精简主报告、可识别商品名称、自然周7/14/28天排名趋势、日内运营事件、高退货率与类目变化、变狗/下架状态、带上架日期与同类判断的新品雷达、BSR动态渲染等待、失败项手动/单次延迟自动精准重试、30天核心历史自动清理、定时任务及提前唤醒；Server酱微信日报与周一10:00周报使用独立 LaunchAgent，SendKey 保存在 macOS 钥匙串。管理页面只绑定本机，无公网认证；迁移云服务器前必须增加登录认证并改用 Linux 调度器。
+当前支持多项目、批量录入、组合筛选、五页精简主报告、可识别商品名称、自然周7/14/28天排名趋势、日内运营事件、高退货率与类目变化、变狗/下架状态、带上架日期与同类判断的新品雷达、BSR动态渲染等待、失败项手动/单次延迟自动精准重试、30天核心历史自动清理、定时任务及提前唤醒。定时入口具备登录漏执行检查、时段去重和系统级前后兜底守护；Server酱微信日报与周一10:00周报使用独立 LaunchAgent，SendKey 保存在 macOS 钥匙串。管理页面只绑定本机，无公网认证；迁移云服务器前必须增加登录认证并改用 Linux 调度器。

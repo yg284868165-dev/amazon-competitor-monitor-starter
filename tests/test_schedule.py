@@ -1,9 +1,12 @@
 from pathlib import Path
 import asyncio
+from datetime import datetime
+import json
 import tempfile
 from unittest.mock import AsyncMock
 
 import schedule
+import wake_helper
 from run import auto_retry_failed_runs, failed_targets
 import run
 from schedule import plist_data
@@ -11,12 +14,69 @@ from app.config import Category, Competitor, Keyword, Project
 from app.storage.database import Database, PROJECT_TABLES
 
 
-def test_scheduled_collection_starts_python_directly():
+def test_scheduled_collection_uses_deduplicating_runner_and_checks_at_login():
     value = plist_data({"calendar": [{"Hour": 8, "Minute": 0}], "task": "all", "project": "all"})
     assert value["ProcessType"] == "Interactive"
     assert value["ProgramArguments"][0].endswith("/.venv/bin/python")
-    assert value["ProgramArguments"][1].endswith("/run.py")
-    assert value["ProgramArguments"][-1] == "--scheduled"
+    assert value["ProgramArguments"][1].endswith("/scheduled_runner.py")
+    assert value["RunAtLoad"] is True
+
+
+def test_wake_daemon_checks_agent_before_and_after_each_slot():
+    value = schedule._wake_plist_data("/python", {
+        "times": ["00:00", "08:00"], "wake_lead_minutes": 2,
+    })
+    calendar = {(item["Hour"], item["Minute"]) for item in value["StartCalendarInterval"]}
+    assert {(0, 10), (23, 59), (0, 5), (7, 59), (8, 5)} <= calendar
+    assert value["RunAtLoad"] is True
+
+
+def test_wake_helper_bootstraps_missing_agent_then_kickstarts_in_recovery_window(monkeypatch, tmp_path):
+    config_path = tmp_path / "wake.json"
+    plist_path = tmp_path / "agent.plist"
+    plist_path.write_text("plist", encoding="utf-8")
+    config_path.write_text(json.dumps({
+        "times": ["14:00"], "user_id": 501,
+        "agent_label": "test.agent", "agent_plist": str(plist_path),
+        "recovery_delay_minutes": 5,
+    }), encoding="utf-8")
+    monkeypatch.setattr(wake_helper, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(wake_helper, "_console_user_id", lambda: 501)
+    calls = []
+
+    class Result:
+        def __init__(self, returncode=0):
+            self.returncode = returncode
+            self.stdout = ""
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == [wake_helper.LAUNCHCTL, "print"]:
+            return Result(1)
+        return Result()
+
+    monkeypatch.setattr(wake_helper.subprocess, "run", fake_run)
+    assert wake_helper.ensure_collection_agent(datetime(2026, 9, 9, 14, 5)) is True
+    assert [wake_helper.LAUNCHCTL, "bootstrap", "gui/501", str(plist_path)] in calls
+    assert [wake_helper.LAUNCHCTL, "kickstart", "gui/501/test.agent"] in calls
+
+
+def test_schedule_status_reports_outdated_privileged_guard(monkeypatch, capsys, tmp_path):
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    (installed / "wake_helper.py").write_text("old", encoding="utf-8")
+    monkeypatch.setattr(schedule, "WAKE_BASE_DIR", installed)
+    monkeypatch.setattr(schedule, "load_schedule", lambda: {
+        "enabled": True, "times": ["14:00"], "task": "all", "project": "all",
+        "wake_enabled": True, "wake_lead_minutes": 2,
+    })
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(schedule.subprocess, "run", lambda *args, **kwargs: Result())
+    schedule.status()
+    assert "重启自愈守护: 待更新" in capsys.readouterr().out
 
 
 def test_collection_prevents_idle_sleep_after_python_starts(monkeypatch):

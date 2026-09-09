@@ -9,6 +9,7 @@ REPORT_DIR = OUTPUT_DIR / "reports"
 SCREENSHOT_DIR = OUTPUT_DIR / "screenshots"
 HTML_DIR = OUTPUT_DIR / "html"
 LOG_DIR = OUTPUT_DIR / "logs"
+LAUNCHD_LOG_DIR = Path.home() / "Library" / "Logs" / "AmazonCompetitorMonitor"
 DB_PATH = DATA_DIR / "monitor.db"
 
 

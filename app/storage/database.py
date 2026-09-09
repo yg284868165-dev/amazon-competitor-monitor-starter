@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS collection_alerts (
     title TEXT NOT NULL, body TEXT NOT NULL, delivery_status TEXT NOT NULL DEFAULT 'pending',
     attempt_count INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, last_error TEXT, sent_at TEXT
 );
+CREATE TABLE IF NOT EXISTS scheduler_state (
+    id INTEGER PRIMARY KEY CHECK(id=1), activated_at TEXT NOT NULL,
+    signature TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS scheduled_executions (
+    slot_time TEXT PRIMARY KEY, task_type TEXT NOT NULL, project_selector TEXT NOT NULL,
+    claimed_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL,
+    exit_code INTEGER, delay_seconds INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS bsr_new_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, asin TEXT NOT NULL,
     first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, category_name TEXT,
@@ -186,12 +195,19 @@ class Database:
         finally:
             connection.close()
 
-    def start_run(self, project_id: str, task_type: str, total_tasks: int, source_run_id: str | None = None) -> str:
+    def start_run(
+        self, project_id: str, task_type: str, total_tasks: int,
+        source_run_id: str | None = None, started_at: str | None = None,
+    ) -> str:
         run_id = uuid.uuid4().hex
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO collection_runs(run_id, project_id, task_type, started_at, status, total_tasks, source_run_id) VALUES(?,?,?,?,?,?,?)",
-                (run_id, project_id, task_type, datetime.now().isoformat(timespec="seconds"), "running", total_tasks, source_run_id),
+                (
+                    run_id, project_id, task_type,
+                    started_at or datetime.now().isoformat(timespec="seconds"),
+                    "running", total_tasks, source_run_id,
+                ),
             )
         return run_id
 
