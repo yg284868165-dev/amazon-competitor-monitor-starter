@@ -71,6 +71,96 @@ def test_failed_daily_send_keeps_exact_generated_body(monkeypatch, tmp_path):
     }
 
 
+def test_serverchan_transport_error_retries_with_30_120_300_backoff(monkeypatch):
+    outcomes = [
+        serverchan.ServerChanTransportError("tls-1"),
+        serverchan.ServerChanTransportError("tls-2"),
+        "发送成功",
+    ]
+    calls = []
+    sleeps = []
+
+    def fake_send(title, body):
+        calls.append((title, body))
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(serverchan, "send_serverchan", fake_send)
+    monkeypatch.setattr(serverchan.time, "sleep", sleeps.append)
+
+    message, attempt = serverchan._send_serverchan_with_retry("日报", "正文")
+
+    assert message == "发送成功"
+    assert attempt == 3
+    assert len(calls) == 3
+    assert sleeps == [30, 120]
+    assert serverchan._success_message(message, attempt) == "发送成功（自动重试第2次后成功）"
+
+
+def test_serverchan_transport_error_reports_only_after_all_retries(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def always_fails(*_):
+        calls.append(1)
+        raise serverchan.ServerChanTransportError("tls-down")
+
+    monkeypatch.setattr(serverchan, "send_serverchan", always_fails)
+    monkeypatch.setattr(serverchan.time, "sleep", sleeps.append)
+
+    with pytest.raises(serverchan.ServerChanTransportError, match="连续4次失败"):
+        serverchan._send_serverchan_with_retry("日报", "正文")
+
+    assert len(calls) == 4
+    assert sleeps == [30, 120, 300]
+
+
+def test_daily_transport_failure_writes_only_one_final_history_row(monkeypatch, tmp_path):
+    db = Database(tmp_path / "test.db")
+    calls = []
+    monkeypatch.setattr(serverchan, "Database", lambda: db)
+    monkeypatch.setattr(serverchan, "load_notification_config", lambda: {
+        "enabled": True, "send_when_no_changes": True, "max_items": 15,
+    })
+    monkeypatch.setattr(
+        serverchan, "build_daily_summary",
+        lambda *_: ("测试日报", "## 测试日报\n\n- 精确正文", 1),
+    )
+
+    def always_fails(*_):
+        calls.append(1)
+        raise serverchan.ServerChanTransportError("tls-down")
+
+    monkeypatch.setattr(serverchan, "send_serverchan", always_fails)
+    monkeypatch.setattr(serverchan.time, "sleep", lambda _: None)
+
+    with pytest.raises(serverchan.ServerChanTransportError, match="连续4次失败"):
+        serverchan.send_daily(date(2026, 9, 1), force=True)
+
+    rows = db.fetchall("SELECT success,response_message,body FROM notification_logs")
+    assert len(calls) == 4
+    assert len(rows) == 1
+    assert rows[0]["success"] == 0
+    assert "连续4次失败" in rows[0]["response_message"]
+    assert rows[0]["body"] == "## 测试日报\n\n- 精确正文"
+
+
+def test_serverchan_api_error_is_not_retried(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(
+        serverchan, "send_serverchan",
+        lambda *_: (_ for _ in ()).throw(serverchan.ServerChanAPIError("SendKey无效")),
+    )
+    monkeypatch.setattr(serverchan.time, "sleep", sleeps.append)
+
+    with pytest.raises(serverchan.ServerChanAPIError, match="SendKey无效"):
+        serverchan._send_serverchan_with_retry("日报", "正文")
+
+    assert sleeps == []
+
+
 def _insert_change(db, event_id, field_name, old_value, new_value, event_time, asin="B000000001"):
     db.insert("change_events", {
         "run_id": f"run-{event_id}", "project_id": "project", "event_type": "field_changed",

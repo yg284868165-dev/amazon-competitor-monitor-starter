@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import ssl
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,11 +25,21 @@ from app.trends import analyze_all_weekly_trends
 KEYCHAIN_SERVICE = "AmazonCompetitorMonitor.ServerChan"
 KEYCHAIN_ACCOUNT = os.environ.get("USER", "amazon-monitor")
 CONFIG_PATH = CONFIG_DIR / "notification.json"
+SERVERCHAN_RETRY_DELAYS_SECONDS = (30, 120, 300)
+LOGGER = logging.getLogger("monitor")
 INTRADAY_EVENT_FIELDS = {
     "current_price", "coupon_text", "deal_text", "business_price_text", "availability",
     "featured_seller", "offer_count", "ships_from",
     "high_return_rate", "listing_status", "main_category_name", "subcategory_names",
 }
+
+
+class ServerChanTransportError(RuntimeError):
+    """A transient network/TLS/response error that is safe to retry."""
+
+
+class ServerChanAPIError(RuntimeError):
+    """A definitive ServerChan response that should not be retried automatically."""
 
 
 def default_config() -> dict[str, Any]:
@@ -466,11 +479,41 @@ def send_serverchan(title: str, body: str) -> str:
     try:
         with urllib.request.urlopen(request, timeout=25) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Server酱请求失败：{exc}") from exc
+    except (
+        urllib.error.URLError, TimeoutError, ssl.SSLError,
+        ConnectionError, json.JSONDecodeError,
+    ) as exc:
+        raise ServerChanTransportError(f"Server酱请求失败：{exc}") from exc
     if payload.get("code") != 0:
-        raise RuntimeError(f"Server酱发送失败：{payload.get('message') or payload.get('data') or payload}")
+        raise ServerChanAPIError(
+            f"Server酱发送失败：{payload.get('message') or payload.get('data') or payload}"
+        )
     return str(payload.get("message") or "发送成功")
+
+
+def _send_serverchan_with_retry(title: str, body: str) -> tuple[str, int]:
+    total_attempts = len(SERVERCHAN_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(1, total_attempts + 1):
+        try:
+            return send_serverchan(title, body), attempt
+        except ServerChanTransportError as exc:
+            if attempt >= total_attempts:
+                raise ServerChanTransportError(
+                    f"Server酱网络请求连续{total_attempts}次失败（初次发送及3次自动重试）：{exc}"
+                ) from exc
+            delay = SERVERCHAN_RETRY_DELAYS_SECONDS[attempt - 1]
+            LOGGER.warning(
+                "Server酱第%d次请求失败，%d秒后进行第%d次尝试: %s",
+                attempt, delay, attempt + 1, exc,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def _success_message(message: str, attempt: int) -> str:
+    if attempt == 1:
+        return message
+    return f"{message}（自动重试第{attempt - 1}次后成功）"
 
 
 def send_daily(report_date: date | None = None, force: bool = False) -> dict[str, Any]:
@@ -483,7 +526,8 @@ def send_daily(report_date: date | None = None, force: bool = False) -> dict[str
         return {"sent": False, "message": "昨日无变化，按设置不发送", "item_count": 0}
     db = Database()
     try:
-        message = send_serverchan(title, body)
+        message, attempt = _send_serverchan_with_retry(title, body)
+        message = _success_message(message, attempt)
         db.record_notification(target_date.isoformat(), True, title, count, message, body=body)
         return {"sent": True, "message": message, "item_count": count, "title": title}
     except Exception as exc:
@@ -502,7 +546,8 @@ def send_weekly(week_end: date | None = None, force: bool = False) -> dict[str, 
         return {"sent": False, "message": "上周无日报重点变化、评价数量净变化、明显排名趋势或可信广告投放规律，按设置不发送", "item_count": 0}
     db = Database()
     try:
-        message = send_serverchan(title, body)
+        message, attempt = _send_serverchan_with_retry(title, body)
+        message = _success_message(message, attempt)
         db.record_notification(target_date.isoformat(), True, title, count, message, body=body)
         return {"sent": True, "message": message, "item_count": count, "title": title}
     except Exception as exc:

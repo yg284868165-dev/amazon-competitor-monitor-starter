@@ -52,6 +52,7 @@ Python 3.11、Flask、Playwright、BeautifulSoup、SQLite、openpyxl；前端是
 - BSR 单页需先滚动并按 `bestseller.render_wait_seconds` 动态等待至少48条；整轮部分失败后按 `auto_retry.delay_seconds` 等待并自动精准重试一次，人工已处理时应跳过，禁止无限重试。
 - 只有 LaunchAgent 以 `--scheduled` 启动的自动采集才发送异常通知；应等待自动重试结束后区分“已恢复/仍失败”。Server酱不可达时通知写入 `collection_alerts` 队列，由后续定时采集补发，不得因告警失败中断采集。
 - 日报、周报和采集异常每次发送都应把当时生成的正文保存到 `notification_logs.body`，并按30天保留。管理页须允许查看历史正文和下载对应周期 Excel；失败的日报/周报可人工重发，后来已经成功补发的旧失败记录不可重复发送。采集异常继续使用 `collection_alerts` 自动补发，不走简报人工重发接口。
+- 日报和周报遇到网络、TLS、超时或响应解析异常时，初次失败后按30秒、120秒、300秒退避重试；明确的Server酱接口业务错误不重试。一次发送过程只写入一条最终结果，重试成功时须在结果说明中标明。
 - 不手工修改子配置中的既有 `project_id`；项目改名应从管理页面级联 Excel 子配置、新品规则、数据库和指定项目的定时配置。
 
 ## 当前状态与下一步

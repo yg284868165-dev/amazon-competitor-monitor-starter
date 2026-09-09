@@ -185,7 +185,7 @@ Coupon、Deal 或企业价从有内容变为空时会明确提示活动取消。
 .venv/bin/python notify_schedule.py uninstall
 ```
 
-日报日志位于 `output/logs/notification.stdout.log` 和 `notification.stderr.log`，周报日志位于 `weekly-notification.stdout.log` 和 `weekly-notification.stderr.log`。正文留存功能上线后，每次发送的结果和当时生成的简报正文会同时记录在数据库的 `notification_logs` 表中，并保留最近30天。在管理页面“微信通知 → 最近30天发送记录”可以查看正文；升级前没有保存正文的旧记录会根据当前仍保留的数据重新生成并明确标记，可能与当时实际发送版本略有差异。日报和周报可以下载对应日期的 Excel，发送失败时会显示“重新发送”。采集异常通知失败后仍由待发队列自动补发。微信消息只提供简短摘要，本机 Excel 报告不会上传到 Server酱。
+日报日志位于 `output/logs/notification.stdout.log` 和 `notification.stderr.log`，周报日志位于 `weekly-notification.stdout.log` 和 `weekly-notification.stderr.log`。日报或周报遇到网络、TLS、超时或响应解析异常时，会在初次失败后等待30秒、2分钟和5分钟各自动重试一次；明确的SendKey或接口业务错误不会重试。中间失败不会产生多条发送记录，只有最终成功或连续4次失败的结果会写入历史。正文留存功能上线后，每次发送的结果和当时生成的简报正文会同时记录在数据库的 `notification_logs` 表中，并保留最近30天。在管理页面“微信通知 → 最近30天发送记录”可以查看正文；升级前没有保存正文的旧记录会根据当前仍保留的数据重新生成并明确标记，可能与当时实际发送版本略有差异。日报和周报可以下载对应日期的 Excel，发送失败时会显示“重新发送”。采集异常通知失败后仍由待发队列自动补发。微信消息只提供简短摘要，本机 Excel 报告不会上传到 Server酱。
 
 ## 配置清单
 
