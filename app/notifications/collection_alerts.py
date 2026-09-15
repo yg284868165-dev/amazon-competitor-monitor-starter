@@ -44,7 +44,7 @@ def _failed_target_summary(db: Database, run_id: str) -> tuple[int, str]:
 
 
 def queue_scheduled_collection_alerts(db: Database, source_run_ids: list[str]) -> int:
-    """Queue one final alert per scheduled root run after its retry window."""
+    """Queue alerts only for scheduled runs still failing after their retry window."""
     if not source_run_ids or not load_notification_config().get("enabled"):
         return 0
     projects = {item.project_id: item.project_name for item in load_projects()}
@@ -59,37 +59,30 @@ def queue_scheduled_collection_alerts(db: Database, source_run_ids: list[str]) -
             continue
         recovered_runs = [row for row in descendants if row["status"] == "success"]
         recovered = bool(recovered_runs)
-        final = recovered_runs[-1] if recovered else chain[-1]
+        if recovered:
+            LOGGER.info(
+                "定时采集批次 %s 已通过自动重试恢复，不发送异常通知",
+                source_run_id,
+            )
+            continue
+        final = chain[-1]
         project_name = projects.get(original["project_id"], original["project_id"])
         initial_failed = int(original.get("failed_count") or 0)
         started_at = str(original["started_at"]).replace("T", " ")
         initial_status = RUN_STATUS_LABELS.get(original["status"], original["status"])
-        if recovered:
-            title = f"Amazon采集异常已恢复｜{project_name}"
-            body = "\n".join([
-                f"## {title}", "",
-                f"项目：{project_name}",
-                f"原定采集时间：{started_at}",
-                f"首次结果：{initial_status}，失败{initial_failed}项",
-                f"重试结果：成功{int(final.get('success_count') or 0)}项，失败0项",
-                "处理结果：失败目标已经通过重试恢复，无需人工操作。",
-            ])
-            final_status = "recovered"
-        else:
-            remaining, detail = _failed_target_summary(db, final["run_id"])
-            remaining = remaining or int(final.get("failed_count") or 0)
-            title = f"Amazon采集失败｜{project_name}"
-            body = "\n".join([
-                f"## {title}", "",
-                f"项目：{project_name}",
-                f"原定采集时间：{started_at}",
-                f"首次结果：{initial_status}，失败{initial_failed}项",
-                f"最终结果：仍有{remaining}项失败（{detail}）",
-                "处理建议：网络恢复后在管理页面“最近运行”中点击“重试失败项”。",
-            ])
-            final_status = "failed"
+        remaining, detail = _failed_target_summary(db, final["run_id"])
+        remaining = remaining or int(final.get("failed_count") or 0)
+        title = f"Amazon采集失败｜{project_name}"
+        body = "\n".join([
+            f"## {title}", "",
+            f"项目：{project_name}",
+            f"原定采集时间：{started_at}",
+            f"首次结果：{initial_status}，失败{initial_failed}项",
+            f"最终结果：仍有{remaining}项失败（{detail}）",
+            "处理建议：网络恢复后在管理页面“最近运行”中点击“重试失败项”。",
+        ])
         db.queue_collection_alert(
-            source_run_id, original["project_id"], final_status, title, body,
+            source_run_id, original["project_id"], "failed", title, body,
         )
         queued += 1
     return queued
