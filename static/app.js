@@ -2,9 +2,9 @@ const labels={
   projects:{title:'产品项目',desc:'定义每个在售产品的监控空间和美国邮编；修改项目 ID 后，关联配置会自动同步',fields:{enabled:'启用',project_id:'项目 ID',project_name:'项目名称',postal_code:'美国邮编'}},
   competitors:{title:'竞品 ASIN',desc:'同一项目下的 ASIN 自动参与该项目全部关键词监控',fields:{enabled:'启用',project_id:'项目 ID',asin:'ASIN',internal_name:'内部名称',brand:'品牌（选填）',remark:'备注'}},
   keywords:{title:'关键词',desc:'设置每个项目需要监控的搜索词和页数',fields:{enabled:'启用',project_id:'项目 ID',keyword:'关键词',pages:'搜索页数'}},
-  categories:{title:'BSR 类目',desc:'每个项目可配置一个或多个 Best Sellers 榜单',fields:{enabled:'启用',project_id:'项目 ID',category_name:'类目名称',category_url:'Best Sellers 链接',max_rank:'最大排名'}}
+  categories:{title:'BSR 类目',desc:'每个项目可配置一个或多个 Best Sellers 榜单；最大排名可设1–100，系统会自动调整采集页数和完整性门槛',fields:{enabled:'启用',project_id:'项目 ID',category_name:'类目名称',category_url:'Best Sellers 链接',max_rank:'最大排名'}}
 };
-const state={configs:{},headers:{},dirtyConfigs:new Set(),projects:[],competitorProjectFilter:'all',competitorEnabledFilter:'all',keywordProjectFilter:'all',keywordEnabledFilter:'all',newProductRows:[],newProductRules:{},runIsRunning:false};
+const state={configs:{},headers:{},dirtyConfigs:new Set(),projects:[],competitorProjectFilter:'all',competitorEnabledFilter:'all',keywordProjectFilter:'all',keywordEnabledFilter:'all',newProductRows:[],newProductRules:{},runIsRunning:false,asinHistory:null,historyLoadedKey:''};
 let runPollTimer=null,runPollGraceUntil=0;
 const $=s=>document.querySelector(s);
 const $$=s=>[...document.querySelectorAll(s)];
@@ -12,7 +12,7 @@ async function api(url,options={}){let r;try{r=await fetch(url,{headers:{'Conten
 function toast(text,bad=false){const el=$('#toast');el.textContent=text;el.style.background=bad?'#9e342d':'#17221d';el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2600)}
 function selectOptions(el,includeAll=true){el.innerHTML=(includeAll?'<option value="all">全部项目</option>':'')+state.projects.filter(x=>Number(x.enabled)).map(x=>`<option value="${escapeHtml(x.project_id)}">${escapeHtml(x.project_name)} (${escapeHtml(x.project_id)})</option>`).join('')}
 function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
-async function loadConfig(kind){const data=await api('/api/config/'+kind);state.configs[kind]=data.rows;state.headers[kind]=data.headers;if(kind==='projects'){state.projects=data.rows;selectOptions($('#runProject'));selectOptions($('#scheduleProject'));}renderConfig(kind,data.headers,data.rows);clearConfigDirty(kind);updateCounts()}
+async function loadConfig(kind){const data=await api('/api/config/'+kind);state.configs[kind]=data.rows;state.headers[kind]=data.headers;if(kind==='projects'){state.projects=data.rows;selectOptions($('#runProject'));selectOptions($('#scheduleProject'));populateHistoryProjects()}renderConfig(kind,data.headers,data.rows);if(kind==='competitors')populateHistoryAsins();clearConfigDirty(kind);updateCounts()}
 function updateRowBadge(panel){const badge=panel.querySelector('.config-head .badge');if(!badge)return;const all=panel.querySelectorAll('tbody tr').length,visible=[...panel.querySelectorAll('tbody tr')].filter(tr=>!tr.hidden).length;badge.textContent=visible===all?all+' 条':`显示 ${visible} / 共 ${all} 条`}
 function markConfigDirty(kind){if(kind!=='competitors')return;state.dirtyConfigs.add(kind);const button=$('#'+kind)?.querySelector('.save-table');if(button){button.textContent='保存修改（有未保存内容）';button.classList.add('unsaved')}}
 function clearConfigDirty(kind){state.dirtyConfigs.delete(kind);const button=$('#'+kind)?.querySelector('.save-table');if(button){button.textContent='保存修改';button.classList.remove('unsaved')}}
@@ -49,16 +49,117 @@ function rowElement(kind,headers,row,panel){
     }else{
       field=document.createElement('input');
       if(h==='enabled'){field.type='checkbox';field.checked=Number(row[h])===1||row[h]===true;if(filterable&&panel)field.addEventListener('change',()=>applyTableFilter(panel,kind))}
-      else{field.value=row[h]??'';if(['pages','max_rank'].includes(h))field.type='number';if(h==='project_id'){if(kind==='projects'){field.placeholder='例如 my_product';field.dataset.originalValue=row[h]??'';field.addEventListener('blur',()=>field.value=field.value.trim().toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_-]/g,''))}else{field.readOnly=true;field.title='项目归属只能在产品项目中统一修改'}}}
+      else{field.value=row[h]??'';if(['pages','max_rank'].includes(h))field.type='number';if(h==='max_rank'){field.min='1';field.max='100'}if(h==='project_id'){if(kind==='projects'){field.placeholder='例如 my_product';field.dataset.originalValue=row[h]??'';field.addEventListener('blur',()=>field.value=field.value.trim().toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_-]/g,''))}else{field.readOnly=true;field.title='项目归属只能在产品项目中统一修改'}}}
     }
     field.dataset.field=h;if(kind==='competitors'){field.addEventListener(field.type==='checkbox'||field.tagName==='SELECT'?'change':'input',()=>markConfigDirty(kind))}td.appendChild(field);tr.appendChild(td);
   });
-  const td=document.createElement('td'),btn=document.createElement('button');btn.textContent='删除';btn.className='delete-row';btn.onclick=()=>{tr.remove();markConfigDirty(kind);if(panel)updateRowBadge(panel)};td.appendChild(btn);tr.appendChild(td);return tr;
+  const td=document.createElement('td'),actions=document.createElement('div');actions.className='table-actions';
+  if(kind==='competitors'){
+    const historyButton=document.createElement('button');historyButton.textContent='查看档案';historyButton.className='history-row-button';historyButton.onclick=()=>openHistoryFromRow(tr);actions.appendChild(historyButton);
+  }
+  const btn=document.createElement('button');btn.textContent='删除';btn.className='delete-row';btn.onclick=()=>{tr.remove();markConfigDirty(kind);if(panel)updateRowBadge(panel)};actions.appendChild(btn);td.appendChild(actions);tr.appendChild(td);return tr;
 }
 async function saveTable(kind,headers,panel){const rows=[...panel.querySelectorAll('tbody tr')].map(tr=>{const row={};tr.querySelectorAll('[data-field]').forEach(i=>{row[i.dataset.field]=i.type==='checkbox'?(i.checked?1:0):i.value;if(kind==='projects'&&i.dataset.field==='project_id')row._original_project_id=i.dataset.originalValue||''});return row});try{await api('/api/config/'+kind,{method:'PUT',body:JSON.stringify({rows})});clearConfigDirty(kind);toast(kind==='projects'?'项目及关联配置已保存':'配置已保存');await loadConfig('projects');await Promise.all(Object.keys(labels).filter(x=>x!=='projects').map(loadConfig));return true}catch(e){toast(e.message,true);return false}}
 async function bulkAddCompetitors(panel){const payload={project_id:panel.querySelector('.bulk-project').value,asins:panel.querySelector('.bulk-asins textarea').value,remark:panel.querySelector('.bulk-remark').value};if(state.dirtyConfigs.has('competitors')){if(!confirm('竞品 ASIN 表格有未保存的修改。是否先保存，再继续批量添加？'))return;if(!await saveTable('competitors',state.headers.competitors,$('#competitors')))return}panel=$('#competitors');const button=panel.querySelector('.bulk-submit'),result=panel.querySelector('.bulk-result');button.disabled=true;try{const d=await api('/api/competitors/bulk',{method:'POST',body:JSON.stringify(payload)});const parts=[`成功新增 ${d.added.length} 个`];if(d.duplicates.length)parts.push(`跳过重复 ${d.duplicates.length} 个：${d.duplicates.join(', ')}`);if(d.invalid.length)parts.push(`无效 ${d.invalid.length} 个：${d.invalid.join(', ')}`);result.textContent=parts.join('；');result.className='bulk-result '+(d.invalid.length?'warning':'success');panel.querySelector('.bulk-asins textarea').value='';toast(`已新增 ${d.added.length} 个竞品`);await loadConfig('competitors')}catch(e){result.textContent=e.message;result.className='bulk-result error';toast(e.message,true)}finally{button.disabled=false}}
 async function bulkAddKeywords(panel){const button=panel.querySelector('.bulk-submit'),result=panel.querySelector('.bulk-result'),textarea=panel.querySelector('.bulk-keywords textarea');button.disabled=true;try{const d=await api('/api/keywords/bulk',{method:'POST',body:JSON.stringify({project_id:panel.querySelector('.bulk-project').value,keywords:textarea.value,pages:panel.querySelector('.bulk-pages').value})});const parts=[`成功新增 ${d.added.length} 个`];if(d.duplicates.length)parts.push(`跳过重复 ${d.duplicates.length} 个：${d.duplicates.join(', ')}`);result.textContent=parts.join('；');result.className='bulk-result '+(d.duplicates.length?'warning':'success');textarea.value='';toast(`已新增 ${d.added.length} 个关键词`);await loadConfig('keywords')}catch(e){result.textContent=e.message;result.className='bulk-result error';toast(e.message,true)}finally{button.disabled=false}}
 function updateCounts(){$('#projectCount').textContent=(state.configs.projects||[]).filter(x=>Number(x.enabled)).length;$('#asinCount').textContent=(state.configs.competitors||[]).filter(x=>Number(x.enabled)).length;$('#keywordCount').textContent=(state.configs.keywords||[]).filter(x=>Number(x.enabled)).length}
+function populateHistoryProjects(){
+  const select=$('#historyProject');if(!select)return;
+  const current=select.value;
+  select.innerHTML=state.projects.filter(x=>Number(x.enabled)).map(x=>`<option value="${escapeHtml(x.project_id)}">${escapeHtml(x.project_name)} (${escapeHtml(x.project_id)})</option>`).join('');
+  if([...select.options].some(x=>x.value===current))select.value=current;
+  populateHistoryAsins()
+}
+function populateHistoryAsins(preferred=''){
+  const project=$('#historyProject'),select=$('#historyAsin');if(!project||!select)return;
+  const current=preferred||select.value;
+  const rows=(state.configs.competitors||[]).filter(x=>x.project_id===project.value);
+  select.innerHTML=rows.map(x=>{const name=x.internal_name||x.brand||x.asin;const disabled=Number(x.enabled)?'':'（已停用）';return `<option value="${escapeHtml(String(x.asin||'').toUpperCase())}">${escapeHtml(name)}｜${escapeHtml(String(x.asin||'').toUpperCase())}${disabled}</option>`}).join('');
+  if([...select.options].some(x=>x.value===current))select.value=current;
+  if(!rows.length)select.innerHTML='<option value="">该项目暂无竞品 ASIN</option>';
+  updateHistoryLinks()
+}
+function updateHistoryLinks(){
+  const project=$('#historyProject')?.value||'',asin=$('#historyAsin')?.value||'',days=$('#historyDays')?.value||'30';
+  const amazon=$('#historyAmazonLink'),excel=$('#historyExcelLink');
+  if(asin){amazon.href='https://www.amazon.com/dp/'+encodeURIComponent(asin);amazon.hidden=false;excel.href=`/reports/asin-history?project_id=${encodeURIComponent(project)}&asin=${encodeURIComponent(asin)}&days=${encodeURIComponent(days)}`;excel.hidden=false}else{amazon.hidden=true;excel.hidden=true}
+}
+function invalidateHistoryView(){state.historyLoadedKey='';$('#historyResults').hidden=true;$('#historyEmpty').hidden=false;$('#historyEmpty').textContent='点击“查看档案”整理所选 ASIN 的历史动作。';updateHistoryLinks()}
+async function openHistoryFromRow(row){
+  const project=row.querySelector('[data-field="project_id"]')?.value.trim(),asin=row.querySelector('[data-field="asin"]')?.value.trim().toUpperCase();
+  if(!project||!asin){toast('请先填写项目 ID 和 ASIN',true);return}
+  if(state.dirtyConfigs.has('competitors')){
+    if(!confirm('竞品 ASIN 表格有未保存的修改。是否先保存，再查看动作档案？'))return;
+    if(!await saveTable('competitors',state.headers.competitors,$('#competitors')))return
+  }
+  $('#historyProject').value=project;populateHistoryAsins(asin);$('#historyAsin').value=asin;updateHistoryLinks();
+  await activateTab($('#tabs button[data-tab="asinHistory"]'))
+}
+function displayTime(value){return value?String(value).replace('T',' '):'—'}
+function safeHttpUrl(value){try{const url=new URL(String(value));return ['http:','https:'].includes(url.protocol)?url.href:''}catch(e){return ''}}
+function money(value){return value===null||value===undefined||value===''?'—':'$'+Number(value).toFixed(2).replace(/\.00$/,'')}
+function historyValue(value,type){
+  if(type==='images'){
+    const images=(Array.isArray(value)?value:[]).map(safeHttpUrl).filter(Boolean);
+    return images.length?`<div class="history-images">${images.map((url,index)=>`<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img src="${escapeHtml(url)}" alt="商品图 ${index+1}" loading="lazy"><span>图 ${index+1}</span></a>`).join('')}</div>`:'<span class="muted-text">无</span>'
+  }
+  if(type==='list'){
+    const values=Array.isArray(value)?value:[];
+    return values.length?`<ol class="history-list-value">${values.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ol>`:'<span class="muted-text">无</span>'
+  }
+  return `<div class="history-text-value">${escapeHtml(value||'无')}</div>`
+}
+function renderHistoryActions(){
+  const container=$('#historyActions'),filter=$('#historyCategory').value,data=state.asinHistory;
+  if(!data)return;
+  const actions=data.actions.filter(x=>filter==='all'||x.categories.includes(filter));
+  container.innerHTML=actions.length?actions.map(action=>{const impacts=action.impacts||[];const evidence=impacts.length?`<details class="history-action-impacts"><summary>后续排名对照</summary><div class="history-impact-content">${impacts.map(row=>`<div class="history-impact-row"><div><strong>${escapeHtml(row.metric_label)}</strong><span>${escapeHtml(row.context)}</span></div>${[['before','动作前'],['day_1','1天后'],['day_3','3天后'],['day_7','7天后']].map(([key,label])=>`<div class="rank-point"><span>${label}</span>${rankPoint(row.points[key])}</div>`).join('')}</div>`).join('')}</div></details>`:'';return `<article class="history-action ${action.is_direct_action?'direct':'platform'}"><div class="history-action-head"><div><time>${escapeHtml(displayTime(action.observed_at))}</time><h3>${escapeHtml(action.title)}</h3></div><div class="history-tags">${action.category_labels.map(label=>`<span>${escapeHtml(label)}</span>`).join('')}</div></div><ul>${action.items.map(item=>`<li><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.summary)}</span></li>`).join('')}</ul>${evidence}</article>`}).join(''):'<div class="empty-state">所选时间内没有这类动作。</div>'
+}
+function renderHistoryListing(){
+  const changes=state.asinHistory.listing_changes,container=$('#historyListingChanges');
+  container.innerHTML=changes.length?changes.map(change=>{const item=change.item;return `<article class="listing-change"><div class="listing-change-head"><div><time>${escapeHtml(displayTime(change.observed_at))}</time><h3>${escapeHtml(item.label)}</h3></div><span>${escapeHtml(item.summary)}</span></div><div class="listing-compare"><div><h4>变化前</h4>${historyValue(item.old,item.display_type)}</div><div><h4>变化后</h4>${historyValue(item.new,item.display_type)}</div></div></article>`}).join(''):'<div class="empty-state">所选时间内没有检测到 Listing 内容变化。</div>'
+}
+function rankPoint(point){
+  const labels={unranked:'未进入监控页数',not_observed:'该次未显示类目排名',pending:'待积累',no_data:'无有效采样'};
+  const value=point.status==='ranked'?`第${point.value}名`:(labels[point.status]||point.status);
+  return `<strong class="point-${escapeHtml(point.status)}">${escapeHtml(value)}</strong>${point.observed_at?`<small>${escapeHtml(displayTime(point.observed_at))}</small>`:''}`
+}
+function renderHistoryBackground(){
+  const background=state.asinHistory.background;
+  const rows=[
+    ['价格',money(background.price.start),money(background.price.end),`${money(background.price.min)} – ${money(background.price.max)}`],
+    ['大类目 BSR',background.main_bsr.start??'—',background.main_bsr.end??'—',`最好 ${background.main_bsr.best??'—'} / 最低 ${background.main_bsr.worst??'—'}`],
+    ['评价数',background.rating_count.start??'—',background.rating_count.end??'—',background.rating_count.change===null?'—':`净变化 ${background.rating_count.change>=0?'+':''}${background.rating_count.change}`],
+  ];
+  $('#historyBackground').innerHTML=rows.map(row=>`<div><span>${escapeHtml(row[0])}</span><strong>${escapeHtml(row[1])} → ${escapeHtml(row[2])}</strong><small>${escapeHtml(row[3])}</small></div>`).join('')
+}
+function renderHistoryProductTable(){
+  const table=$('#historyProductTable'),headers=['采集时间','价格','优惠券','促销','企业价','库存状态','跟卖数','购物车卖家','发货方','页面状态'],status={active:'正常',dog:'页面变狗',removed:'商品下架'};
+  table.querySelector('thead').innerHTML='<tr>'+headers.map(x=>`<th>${x}</th>`).join('')+'</tr>';
+  const rows=state.asinHistory.intraday.product;
+  table.querySelector('tbody').innerHTML=rows.length?rows.map(row=>`<tr><td>${escapeHtml(displayTime(row.collected_at))}</td><td>${escapeHtml(money(row.price))}</td><td>${escapeHtml(row.coupon||'—')}</td><td>${escapeHtml(row.deal||'—')}</td><td>${escapeHtml(row.business_price||'—')}</td><td>${escapeHtml(row.availability||'—')}</td><td>${row.offer_count??'—'}</td><td>${escapeHtml(row.featured_seller||'—')}</td><td>${escapeHtml(row.ships_from||'—')}</td><td>${escapeHtml(status[row.listing_status]||row.listing_status||'—')}</td></tr>`).join(''):'<tr><td colspan="10" class="empty-cell">所选时间内没有有效商品快照。</td></tr>'
+}
+function renderHistoryAdTable(){
+  const table=$('#historyAdTable'),headers=['采集时间','关键词','采集结果','广告位'],labels={observed:'观察到广告',not_observed:'未观察到广告',collection_failed:'采集失败'};
+  table.querySelector('thead').innerHTML='<tr>'+headers.map(x=>`<th>${x}</th>`).join('')+'</tr>';
+  const rows=state.asinHistory.intraday.ads;
+  table.querySelector('tbody').innerHTML=rows.length?rows.map(row=>`<tr><td>${escapeHtml(displayTime(row.collected_at))}</td><td>${escapeHtml(row.keyword)}</td><td><span class="observation-${escapeHtml(row.status)}">${escapeHtml(labels[row.status]||row.status)}</span></td><td>${row.ad_rank===null?'—':'第'+row.ad_rank+'位'}</td></tr>`).join(''):'<tr><td colspan="4" class="empty-cell">所选时间内没有关键词采集记录。</td></tr>'
+}
+function renderAsinHistory(){
+  const data=state.asinHistory,current=data.current,summary=data.summary,status={active:'页面正常',dog:'页面变狗',removed:'商品下架'};
+  $('#historyEmpty').hidden=true;$('#historyResults').hidden=false;$('#historyIdentity').textContent=data.identity;
+  $('#historyCoverage').textContent=`实际覆盖 ${displayTime(data.range.first_sample)} 至 ${displayTime(data.range.last_sample)}，共 ${data.range.sample_count} 次有效商品快照`;
+  $('#historyCurrentStatus').textContent=status[current.listing_status]||current.listing_status||'暂无快照';
+  const cards=[['重要动作节点',summary.important_nodes],['价格与促销',summary.price_promo],['Listing 内容',summary.listing],['销售状态',summary.operations],['Amazon 标识',summary.platform]];
+  $('#historyCards').innerHTML=cards.map(row=>`<div><span>${escapeHtml(row[0])}</span><strong>${row[1]}</strong></div>`).join('');
+  renderHistoryActions();renderHistoryListing();renderHistoryBackground();renderHistoryProductTable();renderHistoryAdTable();updateHistoryLinks()
+}
+async function loadAsinHistory(){
+  const project=$('#historyProject').value,asin=$('#historyAsin').value,days=$('#historyDays').value||'30',button=$('#loadAsinHistory');
+  if(!project||!asin){toast('请先选择产品项目和竞品 ASIN',true);return}
+  button.disabled=true;button.textContent='正在整理…';
+  try{const d=await api(`/api/asin-history?project_id=${encodeURIComponent(project)}&asin=${encodeURIComponent(asin)}&days=${encodeURIComponent(days)}`);state.asinHistory=d.history;state.historyLoadedKey=[project,asin,days].join('|');renderAsinHistory()}catch(e){toast(e.message,true)}finally{button.disabled=false;button.textContent='查看档案'}
+}
 function scheduleRunRefresh(hasRunning){if(runPollTimer)clearTimeout(runPollTimer);runPollTimer=null;const delay=hasRunning||Date.now()<runPollGraceUntil?3000:15000;runPollTimer=setTimeout(()=>loadRuns().catch(e=>{toast(e.message,true);scheduleRunRefresh(false)}),delay)}
 function beginRunPolling(){runPollGraceUntil=Date.now()+15000;scheduleRunRefresh(true)}
 async function loadRuns(){const d=await api('/api/runs'),t=$('#runsTable'),wasRunning=state.runIsRunning,taskLabels={retry:'失败项重试',auto_retry:'自动失败项重试'};const headers=['项目','任务','开始时间','结束时间','状态','成功','失败','操作'];t.querySelector('thead').innerHTML='<tr>'+headers.map(x=>`<th>${x}</th>`).join('')+'</tr>';t.querySelector('tbody').innerHTML=d.rows.map(r=>`<tr><td>${escapeHtml(r.project_id)}</td><td>${escapeHtml(taskLabels[r.task_type]||r.task_type)}</td><td>${escapeHtml(r.started_at)}</td><td>${escapeHtml(r.finished_at||'—')}</td><td class="status-${escapeHtml(r.status)}">${escapeHtml(r.status)}</td><td>${r.success_count}</td><td>${r.failed_count}</td><td>${['partial','failed'].includes(r.status)?`<button class="retry-run" data-run-id="${escapeHtml(r.run_id)}">重试失败项</button>`:'—'}</td></tr>`).join('');t.querySelectorAll('.retry-run').forEach(b=>b.onclick=()=>retryRun(b));const latest=d.rows[0];$('#latestStatus').textContent=latest?latest.status:'暂无';state.runIsRunning=d.rows.some(r=>r.status==='running');if(wasRunning&&!state.runIsRunning){$('#runMessage').textContent='采集任务已结束，状态已自动更新';loadReports().catch(e=>toast(e.message,true))}scheduleRunRefresh(state.runIsRunning)}
@@ -87,28 +188,29 @@ async function sendWeekly(){const b=$('#sendWeekly');if(!confirm('立即发送�
 async function notificationScheduleAction(action){if(action==='uninstall'&&!confirm('确认卸载微信日报定时任务？SendKey和发送记录会保留。'))return;try{if(action==='install'){ $('#notificationEnabled').checked=true;if(!await saveNotification(false))return }const d=await api('/api/notification/schedule/'+action,{method:'POST'});$('#notificationOutput').textContent=d.output;toast(action==='install'?'微信定时发送已安装':'微信定时发送已卸载');await notificationScheduleStatus()}catch(e){$('#notificationOutput').textContent=e.message;toast(e.message,true)}}
 async function notificationScheduleStatus(){try{const d=await api('/api/notification/schedule/status');const installed=d.output.includes('系统状态: 已安装');$('#notificationStatus').textContent=installed?'已安装':'未安装';$('#notificationStatus').className='badge '+(installed?'':'muted');if(!$('#notificationOutput').textContent)$('#notificationOutput').textContent=d.output}catch(e){$('#notificationOutput').textContent=e.message}}
 function splitRuleWords(value){return value.split(/[\n,;，；]+/).map(x=>x.trim()).filter(Boolean)}
-async function loadNewProducts(){const d=await api('/api/new-products');state.newProductRows=d.rows;state.newProductRules=d.rules;const rules=$('#newProductRules');rules.innerHTML=state.projects.filter(x=>Number(x.enabled)).map(p=>{const r=d.rules[p.project_id]||{include_keywords:[],exclude_keywords:[],max_age_days:90};return `<div class="rule-card" data-project-id="${escapeHtml(p.project_id)}"><strong>${escapeHtml(p.project_name)}<br><small>${escapeHtml(p.project_id)}</small></strong><label>同类包含关键词<textarea class="rule-include" rows="3">${escapeHtml((r.include_keywords||[]).join('\n'))}</textarea></label><label>排除关键词<textarea class="rule-exclude" rows="3">${escapeHtml((r.exclude_keywords||[]).join('\n'))}</textarea></label><label>新品最大上架天数<input class="rule-age" type="number" min="1" max="365" value="${r.max_age_days||90}"></label></div>`}).join('');const filter=$('#newProductProjectFilter'),current=filter.value||'all';selectOptions(filter);if([...filter.options].some(x=>x.value===current))filter.value=current;renderNewProductRows()}
+async function loadNewProducts(){const d=await api('/api/new-products');state.newProductRows=d.rows;state.newProductRules=d.rules;const rules=$('#newProductRules');rules.innerHTML=state.projects.filter(x=>Number(x.enabled)).map(p=>{const r=d.rules[p.project_id]||{include_keywords:[],exclude_keywords:[]};return `<div class="rule-card" data-project-id="${escapeHtml(p.project_id)}"><strong>${escapeHtml(p.project_name)}<br><small>${escapeHtml(p.project_id)}</small></strong><label>同类包含关键词<textarea class="rule-include" rows="3">${escapeHtml((r.include_keywords||[]).join('\n'))}</textarea></label><label>排除关键词<textarea class="rule-exclude" rows="3">${escapeHtml((r.exclude_keywords||[]).join('\n'))}</textarea></label></div>`}).join('');const filter=$('#newProductProjectFilter'),current=filter.value||'all';selectOptions(filter);if([...filter.options].some(x=>x.value===current))filter.value=current;renderNewProductRows()}
 function renderNewProductRows(){
-  const project=$('#newProductProjectFilter').value||'all',status=$('#newProductStatusFilter').value||'all';
-  const rows=state.newProductRows.filter(r=>(project==='all'||r.project_id===project)&&(status==='all'||r.relevance_status===status));
-  const t=$('#newProductTable'),labels={pending:'待确认',same:'同类竞品',not_same:'非同类产品',too_old:'超过新品期限'},dateSourceLabels={auto:'自动采集',manual:'人工填写'};
-  const headers=['项目','商品','首次发现','类目排名','上架日期（可修改）','上架天数','筛选状态','判断依据','人工确认'];
+  const project=$('#newProductProjectFilter').value||'all',status=$('#newProductStatusFilter').value||'recommended';
+  const rows=state.newProductRows.filter(r=>(project==='all'||r.project_id===project)&&(status==='all'||(status==='recommended'?r.recommended:r.relevance_status===status)));
+  const t=$('#newProductTable'),labels={pending:'待确认',same:'同类竞品',not_same:'非同类产品'},dateSourceLabels={auto:'自动采集',manual:'人工填写'};
+  const headers=['项目','商品','类目 / 当前排名','近7日日中位路径','趋势判断','同类判断','上架日期（参考）','人工确认'];
   t.querySelector('thead').innerHTML='<tr>'+headers.map(x=>`<th>${x}</th>`).join('')+'</tr>';
   t.querySelector('tbody').innerHTML=rows.map(r=>{
     const dateEditor=`<div class="candidate-date-editor"><input class="candidate-date" type="date" value="${escapeHtml(r.date_first_available||'')}" data-project-id="${escapeHtml(r.project_id)}" data-asin="${escapeHtml(r.asin)}"><button class="save-candidate-date">保存</button></div><small>${escapeHtml(dateSourceLabels[r.date_source]||(r.date_first_available?'自动采集':'尚未获取'))}</small>`;
-    const action=r.relevance_status==='too_old'
-      ? '<span class="badge muted">无需确认</span>'
-      : `<select class="candidate-status" data-project-id="${escapeHtml(r.project_id)}" data-asin="${escapeHtml(r.asin)}"><option value="pending" ${r.relevance_status==='pending'?'selected':''}>待确认</option><option value="same" ${r.relevance_status==='same'?'selected':''}>同类竞品</option><option value="not_same" ${r.relevance_status==='not_same'?'selected':''}>非同类产品</option></select>`;
-    return `<tr><td>${escapeHtml(r.project_name)}</td><td><a href="${escapeHtml(r.detail_url)}" target="_blank" rel="noopener">${escapeHtml(r.product)}</a></td><td>${escapeHtml(r.first_seen_at)}</td><td>${escapeHtml(r.category_name)}：${r.current_rank??'—'}</td><td>${dateEditor}</td><td>${r.age_days??'—'}</td><td>${labels[r.relevance_status]||escapeHtml(r.relevance_status)}</td><td>${escapeHtml(r.relevance_reason||'')}</td><td>${action}</td></tr>`
+    const action=`<select class="candidate-status" data-project-id="${escapeHtml(r.project_id)}" data-asin="${escapeHtml(r.asin)}"><option value="pending" ${r.relevance_status==='pending'?'selected':''}>待确认</option><option value="same" ${r.relevance_status==='same'?'selected':''}>同类竞品</option><option value="not_same" ${r.relevance_status==='not_same'?'selected':''}>非同类产品</option></select>`;
+    const path=(r.daily_path||[]).map(x=>`${escapeHtml(String(x.date).slice(5))} 第${x.rank}名`).join(' → ')||'观测数据不足';
+    const confidence=r.recommended?`<span class="badge radar-${escapeHtml(r.confidence)}">${r.confidence==='high'?'高信心推荐':'推荐关注'}</span>`:'<span class="badge muted">暂不推荐</span>';
+    const typeReason=`${labels[r.relevance_status]||escapeHtml(r.relevance_status)}${r.relevance_reason?'<small>'+escapeHtml(r.relevance_reason)+'</small>':''}`;
+    return `<tr><td>${escapeHtml(r.project_name)}</td><td><a href="${escapeHtml(r.detail_url)}" target="_blank" rel="noopener">${escapeHtml(r.product)}</a></td><td>${escapeHtml(r.category_name)}：${r.current_rank??'—'}</td><td class="radar-path">${path}</td><td>${confidence}<small class="radar-reason">${escapeHtml(r.reason||'')}</small></td><td>${typeReason}</td><td>${dateEditor}<small>上架天数：${r.age_days??'未知'}</small></td><td>${action}</td></tr>`
   }).join('');
   t.querySelectorAll('.candidate-status').forEach(s=>s.onchange=()=>updateCandidateStatus(s));
   t.querySelectorAll('.save-candidate-date').forEach(b=>b.onclick=()=>updateCandidateDate(b))
 }
-async function saveNewProductRules(){const rules={};$$('#newProductRules .rule-card').forEach(card=>{rules[card.dataset.projectId]={include_keywords:splitRuleWords(card.querySelector('.rule-include').value),exclude_keywords:splitRuleWords(card.querySelector('.rule-exclude').value),max_age_days:card.querySelector('.rule-age').value}});try{await api('/api/new-products/rules',{method:'PUT',body:JSON.stringify({rules})});toast('新品筛选规则已保存');await loadNewProducts()}catch(e){toast(e.message,true)}}
+async function saveNewProductRules(){const rules={};$$('#newProductRules .rule-card').forEach(card=>{rules[card.dataset.projectId]={include_keywords:splitRuleWords(card.querySelector('.rule-include').value),exclude_keywords:splitRuleWords(card.querySelector('.rule-exclude').value)}});try{await api('/api/new-products/rules',{method:'PUT',body:JSON.stringify({rules})});toast('同类竞品筛选规则已保存');await loadNewProducts()}catch(e){toast(e.message,true)}}
 async function updateCandidateStatus(select){select.disabled=true;try{await api('/api/new-products/candidate',{method:'PUT',body:JSON.stringify({project_id:select.dataset.projectId,asin:select.dataset.asin,status:select.value})});toast('人工确认已保存');await loadNewProducts()}catch(e){toast(e.message,true);await loadNewProducts()}}
 async function updateCandidateDate(button){const input=button.parentElement.querySelector('.candidate-date');button.disabled=true;try{await api('/api/new-products/date',{method:'PUT',body:JSON.stringify({project_id:input.dataset.projectId,asin:input.dataset.asin,date_first_available:input.value})});toast(input.value?'上架日期已保存':'上架日期已清除');await loadNewProducts();await loadReports()}catch(e){toast(e.message,true);button.disabled=false}}
-async function activateTab(button){const current=$('#tabs button.active')?.dataset.tab;if(current==='competitors'&&button.dataset.tab!=='competitors'&&state.dirtyConfigs.has('competitors')){if(!confirm('竞品 ASIN 有未保存的修改。是否先保存？\n\n点击“确定”保存后切换；点击“取消”留在当前页面。'))return;if(!await saveTable('competitors',state.headers.competitors,$('#competitors')))return}$$('#tabs button').forEach(x=>x.classList.remove('active'));$$('.panel').forEach(x=>x.classList.remove('active'));button.classList.add('active');$('#'+button.dataset.tab).classList.add('active')}
-function bind(){ $$('#tabs button').forEach(b=>b.onclick=()=>activateTab(b));window.addEventListener('beforeunload',event=>{if(!state.dirtyConfigs.has('competitors'))return;event.preventDefault();event.returnValue=''});$('#runButton').onclick=startRun;$('#refreshRuns').onclick=loadRuns;$('#refreshReports').onclick=loadReports;$('#saveSchedule').onclick=()=>saveSchedule();$('#installSchedule').onclick=installSchedule;$('#uninstallSchedule').onclick=()=>scheduleAction('uninstall');$('#saveNotification').onclick=()=>saveNotification();$('#testNotification').onclick=testNotification;$('#sendYesterday').onclick=sendYesterday;$('#sendWeekly').onclick=sendWeekly;$('#installNotification').onclick=()=>notificationScheduleAction('install');$('#uninstallNotification').onclick=()=>notificationScheduleAction('uninstall');$('#refreshNotification').onclick=loadNotification;$('#closeNotificationPreview').onclick=()=>$('#notificationPreview').hidden=true;$('#saveNewProductRules').onclick=saveNewProductRules;$('#refreshNewProducts').onclick=loadNewProducts;$('#newProductProjectFilter').onchange=renderNewProductRows;$('#newProductStatusFilter').onchange=renderNewProductRows}
+async function activateTab(button){const current=$('#tabs button.active')?.dataset.tab;if(current==='competitors'&&button.dataset.tab!=='competitors'&&state.dirtyConfigs.has('competitors')){if(!confirm('竞品 ASIN 有未保存的修改。是否先保存？\n\n点击“确定”保存后切换；点击“取消”留在当前页面。'))return;if(!await saveTable('competitors',state.headers.competitors,$('#competitors')))return}$$('#tabs button').forEach(x=>x.classList.remove('active'));$$('.panel').forEach(x=>x.classList.remove('active'));button.classList.add('active');$('#'+button.dataset.tab).classList.add('active');if(button.dataset.tab==='asinHistory'){const key=[$('#historyProject').value,$('#historyAsin').value,$('#historyDays').value].join('|');if($('#historyAsin').value&&state.historyLoadedKey!==key)await loadAsinHistory()}}
+function bind(){ $$('#tabs button').forEach(b=>b.onclick=()=>activateTab(b));window.addEventListener('beforeunload',event=>{if(!state.dirtyConfigs.has('competitors'))return;event.preventDefault();event.returnValue=''});$('#runButton').onclick=startRun;$('#refreshRuns').onclick=loadRuns;$('#refreshReports').onclick=loadReports;$('#loadAsinHistory').onclick=loadAsinHistory;$('#historyProject').onchange=()=>{populateHistoryAsins();invalidateHistoryView()};$('#historyAsin').onchange=invalidateHistoryView;$('#historyDays').onchange=invalidateHistoryView;$('#historyCategory').onchange=renderHistoryActions;$('#saveSchedule').onclick=()=>saveSchedule();$('#installSchedule').onclick=installSchedule;$('#uninstallSchedule').onclick=()=>scheduleAction('uninstall');$('#saveNotification').onclick=()=>saveNotification();$('#testNotification').onclick=testNotification;$('#sendYesterday').onclick=sendYesterday;$('#sendWeekly').onclick=sendWeekly;$('#installNotification').onclick=()=>notificationScheduleAction('install');$('#uninstallNotification').onclick=()=>notificationScheduleAction('uninstall');$('#refreshNotification').onclick=loadNotification;$('#closeNotificationPreview').onclick=()=>$('#notificationPreview').hidden=true;$('#saveNewProductRules').onclick=saveNewProductRules;$('#refreshNewProducts').onclick=loadNewProducts;$('#newProductProjectFilter').onchange=renderNewProductRows;$('#newProductStatusFilter').onchange=renderNewProductRows}
 async function health(){try{await api('/api/health');$('#systemBadge').textContent='服务正常';$('#systemBadge').style.background='rgba(255,255,255,.12)'}catch(e){$('#systemBadge').textContent='服务已断开';$('#systemBadge').style.background='#9e342d'}}
 async function init(){bind();try{for(const kind of Object.keys(labels))await loadConfig(kind);await Promise.all([loadRuns(),loadReports(),loadSchedule(),loadNotification(),loadNewProducts()]);await health();setInterval(health,15000)}catch(e){toast(e.message,true);$('#systemBadge').textContent='服务已断开';$('#systemBadge').style.background='#9e342d'}}
 init();

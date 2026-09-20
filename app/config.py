@@ -132,5 +132,8 @@ def load_categories(project_id: str | None = None) -> list[Category]:
         url = str(row.get("category_url") or "").strip()
         if not name or not url:
             raise ValueError(f"categories.xlsx 第 {row['_row']} 行缺少 category_name 或 category_url")
-        items.append(Category(row_project, name, url, int(row.get("max_rank") or 100)))
+        max_rank = int(row.get("max_rank") or 100)
+        if not 1 <= max_rank <= 100:
+            raise ValueError(f"categories.xlsx 第 {row['_row']} 行 max_rank 必须在 1–100 之间")
+        items.append(Category(row_project, name, url, max_rank))
     return items

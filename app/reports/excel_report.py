@@ -7,7 +7,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from app.candidates import mark_expired_candidates
+from app.candidates import build_opportunity_radar, mark_expired_candidates
 from app.config import Project, load_competitors, load_keywords
 from app.paths import REPORT_DIR, legacy_change_report_filename, report_filename
 from app.presentation import (
@@ -124,7 +124,7 @@ def _change_rows(db: Database, run_id: str, project_id: str) -> list[dict]:
     today = date.today().isoformat()
     return db.fetchall("""
         SELECT * FROM change_events WHERE project_id=? AND substr(event_time,1,10)=?
-        AND (source_type<>'bestseller' OR event_type IN ('entered_bestseller','new_competitor_found'))
+        AND (source_type<>'bestseller' OR event_type IN ('entered_bestseller','new_competitor_found','competitor_momentum_found'))
         AND source_type<>'search' AND COALESCE(field_name,'')<>'main_bsr'
         ORDER BY CASE severity WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, event_time
     """, (project_id, today))
@@ -166,7 +166,7 @@ def generate_report(db: Database, run_id: str, project: Project) -> str:
     workbook.remove(workbook.active)
     change_sheet = workbook.create_sheet("今日重点")
     trend_sheet = workbook.create_sheet("趋势观察")
-    new_asin_sheet = workbook.create_sheet("新品雷达")
+    new_asin_sheet = workbook.create_sheet("潜力竞品雷达")
     current_sheet = workbook.create_sheet("竞品当前状态")
     error_sheet = workbook.create_sheet("采集异常")
     daily_sheet = workbook.create_sheet("今日汇总")
@@ -324,19 +324,20 @@ def generate_report(db: Database, run_id: str, project: Project) -> str:
         for row in db.fetchall("SELECT * FROM bestseller_snapshots WHERE project_id=? AND run_id=? ORDER BY category_name, rank", (project_id, latest_bsr_run[0]["run_id"])):
             bestseller_sheet.append([row["category_name"], row["rank"], identities.get(row["asin"], row["asin"]), row["asin"], row["title"], row["brand"], row["price"], row["rating_count"], row["rating_value"], row["collected_at"]])
 
-    new_asin_sheet.append(["首次发现", "商品", "类目", "当前排名", "ASIN", "上架日期", "日期来源", "上架天数", "筛选状态", "判断来源", "判断依据", "商品链接", "已提醒时间"])
-    status_labels = {"pending": "待确认", "same": "同类竞品", "not_same": "非同类产品", "too_old": "超过3个月"}
+    new_asin_sheet.append(["首次发现", "商品", "类目", "当前排名", "近7日日中位路径", "趋势判断", "推荐信心", "ASIN", "同类状态", "同类判断依据", "上架日期", "上架天数", "商品链接", "最近趋势提醒时间"])
+    status_labels = {"pending": "待确认", "same": "同类竞品", "not_same": "非同类产品"}
     source_labels = {"auto": "规则判断", "manual": "人工确认"}
-    date_source_labels = {"auto": "自动采集", "manual": "人工填写"}
-    for row in db.fetchall("SELECT * FROM bsr_new_candidates WHERE project_id=? ORDER BY first_seen_at DESC", (project_id,)):
+    confidence_labels = {"high": "高信心推荐", "medium": "推荐关注", "none": "暂不推荐"}
+    for row in build_opportunity_radar(db, project_id):
+        path = " → ".join(f"{item['date'][5:]} 第{item['rank']}名" for item in row["daily_path"])
         new_asin_sheet.append([
             row["first_seen_at"], identities.get(row["asin"], row["asin"]), row["category_name"], row["current_rank"],
-            row["asin"], row["date_first_available"], date_source_labels.get(row.get("date_source"), ""),
-            row["age_days"], status_labels.get(row["relevance_status"], row["relevance_status"]),
-            source_labels.get(row["classification_source"], row["classification_source"]), row["relevance_reason"], row["detail_url"], row["alerted_at"],
+            path, row["reason"], confidence_labels.get(row["confidence"], row["confidence"]), row["asin"],
+            status_labels.get(row["relevance_status"], row["relevance_status"]), row["relevance_reason"],
+            row["date_first_available"], row["age_days"], row["detail_url"], row.get("momentum_alerted_at"),
         ])
         if row["detail_url"]:
-            link_cell = new_asin_sheet.cell(row=new_asin_sheet.max_row, column=12)
+            link_cell = new_asin_sheet.cell(row=new_asin_sheet.max_row, column=13)
             link_cell.hyperlink = row["detail_url"]
             link_cell.style = "Hyperlink"
 

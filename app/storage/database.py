@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS product_snapshots (
     UNIQUE(run_id, asin)
 );
 CREATE INDEX IF NOT EXISTS idx_product_asin_time ON product_snapshots(asin, collected_at);
+CREATE INDEX IF NOT EXISTS idx_product_project_asin_time ON product_snapshots(project_id, asin, collected_at);
 CREATE TABLE IF NOT EXISTS search_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT 'default', keyword TEXT NOT NULL,
     page INTEGER NOT NULL, absolute_position INTEGER, organic_rank INTEGER, ad_rank INTEGER,
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS search_snapshots (
     UNIQUE(run_id, keyword, page, asin, absolute_position)
 );
 CREATE INDEX IF NOT EXISTS idx_search_keyword_time ON search_snapshots(keyword, collected_at);
+CREATE INDEX IF NOT EXISTS idx_search_project_asin_time ON search_snapshots(project_id, asin, collected_at);
 CREATE TABLE IF NOT EXISTS bestseller_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT 'default', category_name TEXT NOT NULL,
     snapshot_date TEXT NOT NULL, rank INTEGER NOT NULL, asin TEXT NOT NULL, title TEXT,
@@ -55,6 +57,7 @@ CREATE TABLE IF NOT EXISTS bestseller_snapshots (
     UNIQUE(run_id, category_name, rank)
 );
 CREATE INDEX IF NOT EXISTS idx_bestseller_category_date ON bestseller_snapshots(category_name, snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_bestseller_project_asin_time ON bestseller_snapshots(project_id, asin, collected_at);
 CREATE TABLE IF NOT EXISTS change_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT 'default', event_type TEXT NOT NULL,
     severity TEXT NOT NULL, source_type TEXT NOT NULL, asin TEXT, keyword TEXT,
@@ -62,6 +65,7 @@ CREATE TABLE IF NOT EXISTS change_events (
     change_value REAL, event_time TEXT NOT NULL, confirmed INTEGER DEFAULT 1,
     message TEXT NOT NULL, details_json TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_change_project_asin_time ON change_events(project_id, asin, event_time);
 CREATE TABLE IF NOT EXISTS collection_errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT 'default', task_type TEXT NOT NULL,
     target TEXT NOT NULL, url TEXT, error_type TEXT NOT NULL, error_message TEXT,
@@ -73,6 +77,7 @@ CREATE TABLE IF NOT EXISTS collection_task_outcomes (
     task_type TEXT NOT NULL, target TEXT NOT NULL, success INTEGER NOT NULL,
     finished_at TEXT NOT NULL, UNIQUE(run_id, task_type, target)
 );
+CREATE INDEX IF NOT EXISTS idx_outcome_project_task_time ON collection_task_outcomes(project_id, task_type, finished_at);
 CREATE TABLE IF NOT EXISTS notification_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, report_date TEXT NOT NULL, channel TEXT NOT NULL,
     sent_at TEXT NOT NULL, success INTEGER NOT NULL, title TEXT NOT NULL,
@@ -101,6 +106,8 @@ CREATE TABLE IF NOT EXISTS bsr_new_candidates (
     age_days INTEGER, relevance_status TEXT NOT NULL DEFAULT 'pending',
     classification_source TEXT NOT NULL DEFAULT 'auto', relevance_reason TEXT,
     detail_url TEXT, last_checked_at TEXT, alerted_at TEXT,
+    momentum_active INTEGER NOT NULL DEFAULT 0,
+    momentum_alerted_at TEXT, momentum_reason TEXT,
     UNIQUE(project_id, asin)
 );
 """
@@ -157,6 +164,13 @@ class Database:
         candidate_columns = {row[1] for row in connection.execute("PRAGMA table_info(bsr_new_candidates)")}
         if "date_source" not in candidate_columns:
             connection.execute("ALTER TABLE bsr_new_candidates ADD COLUMN date_source TEXT")
+        for column, definition in {
+            "momentum_active": "INTEGER NOT NULL DEFAULT 0",
+            "momentum_alerted_at": "TEXT",
+            "momentum_reason": "TEXT",
+        }.items():
+            if column not in candidate_columns:
+                connection.execute(f"ALTER TABLE bsr_new_candidates ADD COLUMN {column} {definition}")
         event_columns = {row[1] for row in connection.execute("PRAGMA table_info(change_events)")}
         if "details_json" not in event_columns:
             connection.execute("ALTER TABLE change_events ADD COLUMN details_json TEXT")

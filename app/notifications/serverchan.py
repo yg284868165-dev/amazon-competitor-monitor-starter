@@ -172,7 +172,7 @@ def _collapse_daily_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]
 def _daily_change_items(db: Database, report_date: date) -> list[dict[str, Any]]:
     events = db.fetchall(
         """SELECT * FROM change_events WHERE substr(event_time,1,10)=?
-           AND (source_type<>'bestseller' OR event_type IN ('entered_bestseller','new_competitor_found'))
+           AND (source_type<>'bestseller' OR event_type IN ('entered_bestseller','new_competitor_found','competitor_momentum_found'))
            AND source_type<>'search'
            AND COALESCE(field_name,'') NOT IN ('main_bsr','rating_count')
            ORDER BY event_time,id""", (report_date.isoformat(),),
@@ -338,7 +338,7 @@ def build_daily_summary(report_date: date, max_items: int = 15) -> tuple[str, st
         lines.append(f"重点变化 {len(project_items)} 项")
         sections = [
             ("商品内容与运营变化", [row for row in project_items if row["source_type"] == "product"]),
-            ("新竞争对手", [row for row in project_items if row["source_type"] == "bestseller"]),
+            ("潜力竞品雷达", [row for row in project_items if row["source_type"] == "bestseller"]),
         ]
         remaining_projects = len(active_project_ids) - project_index
         project_limit = max(0, (max_items - shown) // remaining_projects)

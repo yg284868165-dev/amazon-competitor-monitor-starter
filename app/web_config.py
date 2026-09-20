@@ -84,7 +84,10 @@ def _validate(kind: str, rows: list[dict[str, Any]], project_ids_override: set[s
             url = str(normalized.get("category_url") or "").strip()
             if not url.startswith("https://www.amazon.com/"):
                 raise ValueError(f"第 {index} 行必须填写 amazon.com 的 Best Sellers 链接")
-            normalized["max_rank"] = int(normalized.get("max_rank") or 100)
+            max_rank = int(normalized.get("max_rank") or 100)
+            if not 1 <= max_rank <= 100:
+                raise ValueError(f"第 {index} 行 max_rank 必须在 1–100 之间")
+            normalized["max_rank"] = max_rank
             unique = (project_id, url)
         if unique in seen:
             raise ValueError(f"第 {index} 行与前面的配置重复")

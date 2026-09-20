@@ -24,3 +24,9 @@ def test_main_image_change_summary_is_concise():
         "field_name": "image_hash", "old_value": "https://example.com/old.jpg",
         "new_value": "https://example.com/new.jpg",
     }) == "主图变化"
+
+
+def test_price_appearance_does_not_look_like_a_noop():
+    assert format_change_summary({
+        "field_name": "current_price", "old_value": None, "new_value": "8.99",
+    }) == "当前价格：无 → $8.99"

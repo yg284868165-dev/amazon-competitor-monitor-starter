@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -8,7 +8,18 @@ import pytest
 from app.storage.database import Database
 
 
-def test_candidate_classification_requires_same_type_and_recent_listing(monkeypatch):
+def _insert_momentum(db, asin="B000000001", ranks=(60, 55, 50, 45), end=None):
+    end = end or date.today()
+    for index, rank in enumerate(ranks):
+        day = end - timedelta(days=len(ranks) - index - 1)
+        db.insert("bestseller_snapshots", {
+            "run_id": f"trend-{index}", "project_id": "p", "category_name": "Test",
+            "snapshot_date": day.isoformat(), "rank": rank, "asin": asin,
+            "source_url": "https://example.com", "collected_at": f"{day.isoformat()}T08:00:00",
+        })
+
+
+def test_candidate_classification_is_not_limited_by_listing_age(monkeypatch):
     monkeypatch.setattr(candidates, "load_rules", lambda: {
         "p": {"include_keywords": ["sample widget"], "exclude_keywords": ["excluded accessory"], "max_age_days": 90}
     })
@@ -21,17 +32,17 @@ def test_candidate_classification_requires_same_type_and_recent_listing(monkeypa
         "title": "Sample Widget Household Cleaner", "highlights_text": "", "about_items_json": [],
         "date_first_available": "2026-01-01",
     }, date(2026, 9, 1))
-    assert old["relevance_status"] == "too_old"
+    assert old["relevance_status"] == "same" and old["age_days"] > 90
     boundary = candidates.classify_candidate("p", {
         "title": "Sample Widget Household Cleaner", "highlights_text": "", "about_items_json": [],
         "date_first_available": "2026-06-03",
     }, date(2026, 9, 1))
-    assert boundary["age_days"] == 90 and boundary["relevance_status"] == "too_old"
+    assert boundary["age_days"] == 90 and boundary["relevance_status"] == "same"
     old_without_keyword_match = candidates.classify_candidate("p", {
         "title": "Generic Household Cleaner", "highlights_text": "", "about_items_json": [],
         "date_first_available": "2026-01-01",
     }, date(2026, 9, 1))
-    assert old_without_keyword_match["relevance_status"] == "too_old"
+    assert old_without_keyword_match["relevance_status"] == "not_same"
     excluded = candidates.classify_candidate("p", {
         "title": "Sample Widget Excluded Accessory", "highlights_text": "", "about_items_json": [],
         "date_first_available": "2026-08-12",
@@ -109,10 +120,12 @@ def test_only_qualified_candidate_creates_alert(monkeypatch):
             "last_seen_at": "2026-09-01T08:00:00", "category_name": "Test", "current_rank": 12,
             "age_days": 20, "relevance_status": "same", "classification_source": "auto",
         })
+        _insert_momentum(db)
         assert candidates.create_candidate_alert(db, run_id, "p", "B000000001") is True
         assert candidates.create_candidate_alert(db, run_id, "p", "B000000001") is False
         events = db.fetchall("SELECT * FROM change_events")
-        assert len(events) == 1 and events[0]["event_type"] == "new_competitor_found"
+        assert len(events) == 1 and events[0]["event_type"] == "competitor_momentum_found"
+        assert "60" in events[0]["message"] and "45" in events[0]["message"]
 
 
 def test_current_unmonitored_asin_enters_candidate_pool_without_being_new_to_ranking(monkeypatch):
@@ -154,7 +167,7 @@ def test_monitored_asin_cannot_create_candidate_alert(monkeypatch):
         assert db.fetchall("SELECT COUNT(*) count FROM change_events")[0]["count"] == 0
 
 
-def test_existing_qualified_candidate_is_alerted_when_still_in_current_top_100(monkeypatch):
+def test_existing_same_type_candidate_is_alerted_only_after_sustained_rise(monkeypatch):
     monkeypatch.setattr(candidates, "load_competitors", lambda project_id, include_disabled=False: [])
     monkeypatch.setattr(candidates, "load_rules", lambda: {"p": {"max_age_days": 90}})
     with tempfile.TemporaryDirectory() as directory:
@@ -163,19 +176,21 @@ def test_existing_qualified_candidate_is_alerted_when_still_in_current_top_100(m
         db.upsert_candidate({
             "project_id": "p", "asin": "B000000001", "first_seen_at": "2026-09-01T08:00:00",
             "last_seen_at": "2026-09-01T08:00:00", "category_name": "Test", "current_rank": 20,
-            "age_days": 20, "relevance_status": "same", "classification_source": "auto",
+            "age_days": 500, "relevance_status": "same", "classification_source": "manual",
         })
+        _insert_momentum(db)
+        latest_day = date.today().isoformat()
         db.insert("bestseller_snapshots", {
-            "run_id": run_id, "project_id": "p", "category_name": "Test", "rank": 18,
-            "asin": "B000000001", "snapshot_date": "2026-09-03",
-            "source_url": "https://example.com", "collected_at": "2026-09-03T08:00:00",
+            "run_id": run_id, "project_id": "p", "category_name": "Test", "rank": 44,
+            "asin": "B000000001", "snapshot_date": latest_day,
+            "source_url": "https://example.com", "collected_at": f"{latest_day}T14:00:00",
         })
         assert candidates.discover_candidates(db, run_id, "p") == []
         event = db.fetchall("SELECT event_type,new_value FROM change_events")
-        assert event == [{"event_type": "new_competitor_found", "new_value": "18"}]
+        assert event == [{"event_type": "competitor_momentum_found", "new_value": "47"}]
 
 
-def test_expired_candidate_rejects_manual_confirmation():
+def test_old_candidate_can_be_manually_confirmed_as_same_type():
     with tempfile.TemporaryDirectory() as directory:
         db = Database(Path(directory) / "test.db")
         db.upsert_candidate({
@@ -183,11 +198,12 @@ def test_expired_candidate_rejects_manual_confirmation():
             "last_seen_at": "2026-09-01T08:00:00", "category_name": "Test", "current_rank": 12,
             "age_days": 90, "relevance_status": "too_old", "classification_source": "auto",
         })
-        with pytest.raises(ValueError, match="无需人工确认"):
-            candidates.set_manual_status(db, "p", "B000000001", "same")
+        saved = candidates.set_manual_status(db, "p", "B000000001", "same")
+        assert saved["relevance_status"] == "same"
+        assert saved["classification_source"] == "manual"
 
 
-def test_existing_pending_candidate_is_automatically_marked_expired(monkeypatch):
+def test_existing_candidate_age_refresh_does_not_exclude_old_product(monkeypatch):
     monkeypatch.setattr(candidates, "load_rules", lambda: {"p": {"max_age_days": 90}})
     with tempfile.TemporaryDirectory() as directory:
         db = Database(Path(directory) / "test.db")
@@ -200,8 +216,7 @@ def test_existing_pending_candidate_is_automatically_marked_expired(monkeypatch)
         assert candidates.mark_expired_candidates(db, "p", date(2026, 9, 1)) == 1
         row = db.fetchall("SELECT age_days,relevance_status,relevance_reason FROM bsr_new_candidates")[0]
         assert row["age_days"] == 243
-        assert row["relevance_status"] == "too_old"
-        assert "达到或超过新品期限" in row["relevance_reason"]
+        assert row["relevance_status"] == "pending"
 
 
 def test_manual_candidate_date_recalculates_status_and_can_be_cleared(monkeypatch):
@@ -225,7 +240,43 @@ def test_manual_candidate_date_recalculates_status_and_can_be_cleared(monkeypatc
         assert cleared["date_first_available"] is None
         assert cleared["date_source"] is None
         assert cleared["age_days"] is None
-        assert cleared["relevance_status"] == "pending"
+        assert cleared["relevance_status"] == "same"
+
+
+def test_opportunity_radar_recommends_old_unmonitored_product_with_rising_bsr(monkeypatch, tmp_path):
+    monkeypatch.setattr(candidates, "load_competitors", lambda project_id, include_disabled=False: [])
+    db = Database(tmp_path / "test.db")
+    db.upsert_candidate({
+        "project_id": "p", "asin": "B000000001", "first_seen_at": "2026-01-01T08:00:00",
+        "last_seen_at": datetime.now().isoformat(timespec="seconds"), "category_name": "Test",
+        "current_rank": 45, "title": "Old Pumice Stone", "age_days": 500,
+        "relevance_status": "same", "classification_source": "auto",
+    })
+    _insert_momentum(db)
+
+    rows = candidates.build_opportunity_radar(db)
+
+    assert len(rows) == 1
+    assert rows[0]["recommended"] is True
+    assert rows[0]["start_rank"] == 58 and rows[0]["end_rank"] == 48
+    assert [item["rank"] for item in rows[0]["daily_path"]] == [60, 55, 50, 45]
+    assert rows[0]["age_days"] == 500
+
+
+def test_opportunity_radar_excludes_configured_competitor(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        candidates, "load_competitors",
+        lambda project_id, include_disabled=False: [SimpleNamespace(asin="B000000001")],
+    )
+    db = Database(tmp_path / "test.db")
+    db.upsert_candidate({
+        "project_id": "p", "asin": "B000000001", "first_seen_at": "2026-09-01T08:00:00",
+        "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+        "relevance_status": "same", "classification_source": "auto",
+    })
+    _insert_momentum(db)
+
+    assert candidates.build_opportunity_radar(db) == []
 
 
 def test_manual_candidate_date_rejects_future_date(monkeypatch):

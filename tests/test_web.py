@@ -2,6 +2,8 @@ from datetime import date
 from pathlib import Path
 from io import BytesIO
 
+import pytest
+
 import web
 from web import app
 from app.config import Project
@@ -46,6 +48,44 @@ def test_dashboard_explains_failed_briefing_recovery_and_broad_matching():
     assert "旧记录会明确标记为根据现存数据重建" in page
     assert "短语中任意一个词命中即可" in page
     assert "notificationPreview" in page
+    assert "竞对动作档案" in page
+    assert "后续小类目 BSR" in page
+    assert "潜力竞品雷达" in page
+    assert "采集时间" in page
+
+
+def test_asin_history_api_and_excel_download(monkeypatch):
+    projects = [Project("project", "测试项目", "90001")]
+    captured = {}
+
+    def fake_history(db, project_id, asin, days):
+        captured["api"] = (project_id, asin, days)
+        return {"project_id": project_id, "asin": asin, "days": days}
+
+    def fake_excel(project_id, asin, days):
+        captured["excel"] = (project_id, asin, days)
+        return BytesIO(b"history-excel")
+
+    monkeypatch.setattr(web, "load_projects", lambda: projects)
+    monkeypatch.setattr(web, "build_asin_history", fake_history)
+    monkeypatch.setattr(web, "build_asin_history_excel", fake_excel)
+    client = app.test_client()
+
+    response = client.get("/api/asin-history?project_id=project&asin=b000000001&days=14")
+    assert response.status_code == 200
+    assert response.get_json()["history"]["asin"] == "B000000001"
+    assert captured["api"] == ("project", "B000000001", 14)
+
+    response = client.get("/api/asin-history?project_id=project&asin=B000000001&days=")
+    assert response.status_code == 200
+    assert captured["api"] == ("project", "B000000001", 30)
+
+    report = client.get("/reports/asin-history?project_id=project&asin=b000000001&days=30")
+    assert report.status_code == 200 and report.data == b"history-excel"
+    assert report.mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert "B000000001" in report.headers["Content-Disposition"]
+    assert captured["excel"] == ("project", "B000000001", 30)
+    assert client.get("/api/asin-history?project_id=missing&asin=B000000001").status_code == 400
 
 
 def test_rejects_unknown_config():
@@ -93,6 +133,21 @@ def test_project_id_rename_cascades_to_child_tables(monkeypatch):
     assert saved_rules == [{
         "new_id": {"include_keywords": ["craft brush"], "exclude_keywords": [], "max_age_days": 90}
     }]
+
+
+def test_category_max_rank_must_be_between_1_and_100(monkeypatch):
+    monkeypatch.setattr(
+        web_config, "read_table",
+        lambda kind: [{"project_id": "project"}] if kind == "projects" else [],
+    )
+    monkeypatch.setattr(web_config, "_write_clean_table", lambda kind, rows: None)
+    monkeypatch.setattr(web_config, "load_rules", lambda: {})
+
+    with pytest.raises(ValueError, match="1–100"):
+        web_config.write_table("categories", [{
+            "enabled": 1, "project_id": "project", "category_name": "Test",
+            "category_url": "https://www.amazon.com/zgbs/test", "max_rank": 101,
+        }])
 
 
 def test_report_filename_includes_safe_project_name():

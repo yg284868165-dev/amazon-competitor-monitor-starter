@@ -135,6 +135,8 @@ def format_change_summary(row: dict[str, Any]) -> str:
         return f"新进入 {row.get('category_name') or 'BSR前100'}，目前第{new}名"
     if row.get("event_type") == "new_competitor_found":
         return str(row.get("message") or f"发现未监控的同类新竞品，目前第{new}名")
+    if row.get("event_type") == "competitor_momentum_found":
+        return str(row.get("message") or f"发现BSR上升的未监控同类竞品，目前第{new}名")
     if row.get("field_name") in {"organic_rank", "ad_rank", "main_bsr", "rank"}:
         try:
             old_rank, new_rank = int(float(old)), int(float(new))
@@ -149,6 +151,13 @@ def format_change_summary(row: dict[str, Any]) -> str:
         return f"{summary}；当前各星级评价占比：{breakdown}" if breakdown else summary
     path = _transition_path(row)
     if row.get("field_name") == "current_price" and len(path) >= 2:
+        if path[0] is None or path[-1] is None:
+            def price_text(value: Any) -> str:
+                try:
+                    return f"${float(value):g}" if value is not None else "无"
+                except (TypeError, ValueError):
+                    return _short(value, 20) or "无"
+            return f"当前价格：{price_text(path[0])} → {price_text(path[-1])}"
         try:
             prices = [float(value) for value in path if value is not None]
             start, end, lowest = prices[0], prices[-1], min(prices)

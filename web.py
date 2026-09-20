@@ -9,10 +9,12 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file, send_from_directory
 
+from app.asin_history import build_asin_history
 from app.config import load_projects, load_settings
 from app.candidates import (
-    create_candidate_alert, load_rules, mark_expired_candidates,
+    build_opportunity_radar, create_candidate_alert, load_rules, mark_expired_candidates,
     refresh_automatic_classifications, save_rules, set_candidate_date, set_manual_status,
+    sync_candidate_alerts,
 )
 from app.notifications.serverchan import (
     build_daily_summary, build_weekly_summary, has_sendkey, load_notification_config,
@@ -21,6 +23,7 @@ from app.notifications.serverchan import (
 from app.paths import LOG_DIR, REPORT_DIR, ROOT, ensure_directories, report_filename
 from app.presentation import build_product_identities
 from app.reports.daily_report import build_daily_excel_report
+from app.reports.asin_history_report import build_asin_history_excel
 from app.reports.excel_report import generate_report
 from app.reports.weekly_report import build_weekly_excel_report
 from app.storage.database import Database
@@ -288,26 +291,29 @@ def new_products():
     db = Database()
     mark_expired_candidates(db)
     changed = refresh_automatic_classifications(db)
-    latest_runs: dict[str, str | None] = {}
+    changed_by_project: dict[str, set[str]] = {}
     for row in changed:
-        if row["relevance_status"] != "same":
-            continue
-        project_id = str(row["project_id"])
-        if project_id not in latest_runs:
-            latest = db.fetchall(
-                "SELECT run_id FROM collection_runs WHERE project_id=? ORDER BY started_at DESC LIMIT 1",
-                (project_id,),
-            )
-            latest_runs[project_id] = latest[0]["run_id"] if latest else None
-        if latest_runs[project_id]:
-            create_candidate_alert(db, latest_runs[project_id], project_id, row["asin"])
+        changed_by_project.setdefault(str(row["project_id"]), set()).add(str(row["asin"]))
+    for project_id, asins in changed_by_project.items():
+        latest = db.fetchall(
+            "SELECT run_id FROM collection_runs WHERE project_id=? AND status<>'running' ORDER BY started_at DESC LIMIT 1",
+            (project_id,),
+        )
+        if latest:
+            sync_candidate_alerts(db, latest[0]["run_id"], project_id, asins)
     projects = {item.project_id: item for item in load_projects()}
     identities = {project_id: build_product_identities(db, project_id) for project_id in projects}
-    rows = db.fetchall("SELECT * FROM bsr_new_candidates ORDER BY first_seen_at DESC")
+    rows = build_opportunity_radar(db)
     for row in rows:
         row["project_name"] = projects[row["project_id"]].project_name if row["project_id"] in projects else row["project_id"]
         row["product"] = identities.get(row["project_id"], {}).get(row["asin"], row["asin"])
-    return jsonify({"ok": True, "rules": load_rules(), "rows": rows})
+    return jsonify({
+        "ok": True, "rules": load_rules(), "rows": rows,
+        "method": {
+            "days": 7, "minimum_observed_days": 4, "minimum_rank_gain": 5,
+            "minimum_gain_ratio": 10, "minimum_up_ratio": 60,
+        },
+    })
 
 
 @app.put("/api/new-products/rules")
@@ -317,16 +323,17 @@ def update_new_product_rules():
         rules = payload.get("rules") or {}
         valid_projects = {item.project_id for item in load_projects()}
         if set(rules) - valid_projects:
-            raise ValueError("新品规则中包含不存在的产品项目")
+            raise ValueError("同类竞品规则中包含不存在的产品项目")
         cleaned = save_rules(rules)
         db = Database()
         refresh_automatic_classifications(db)
-        for row in db.fetchall(
-            "SELECT * FROM bsr_new_candidates WHERE classification_source='auto' AND relevance_status='same'"
-        ):
-            latest = db.fetchall("SELECT run_id FROM collection_runs WHERE project_id=? ORDER BY started_at DESC LIMIT 1", (row["project_id"],))
+        for project_id in cleaned:
+            latest = db.fetchall(
+                "SELECT run_id FROM collection_runs WHERE project_id=? AND status<>'running' ORDER BY started_at DESC LIMIT 1",
+                (project_id,),
+            )
             if latest:
-                create_candidate_alert(db, latest[0]["run_id"], row["project_id"], row["asin"])
+                sync_candidate_alerts(db, latest[0]["run_id"], project_id)
         return jsonify({"ok": True, "rules": cleaned})
     except Exception as exc:
         return response_error(exc)
@@ -340,7 +347,10 @@ def update_new_product_candidate():
         row = set_manual_status(Database(), project_id, asin, str(payload.get("status") or ""))
         projects = {item.project_id: item for item in load_projects()}
         if project_id in projects:
-            latest = Database().fetchall("SELECT run_id FROM collection_runs WHERE project_id=? ORDER BY started_at DESC LIMIT 1", (project_id,))
+            latest = Database().fetchall(
+                "SELECT run_id FROM collection_runs WHERE project_id=? AND status<>'running' ORDER BY started_at DESC LIMIT 1",
+                (project_id,),
+            )
             if latest:
                 generate_report(Database(), latest[0]["run_id"], projects[project_id])
         return jsonify({"ok": True, "row": row})
@@ -361,7 +371,7 @@ def update_new_product_date():
         projects = {item.project_id: item for item in load_projects()}
         if project_id in projects:
             latest = db.fetchall(
-                "SELECT run_id FROM collection_runs WHERE project_id=? ORDER BY started_at DESC LIMIT 1",
+                "SELECT run_id FROM collection_runs WHERE project_id=? AND status<>'running' ORDER BY started_at DESC LIMIT 1",
                 (project_id,),
             )
             if latest:
@@ -444,6 +454,45 @@ def reports():
             "end_date": week_end.isoformat(),
         },
     })
+
+
+@app.get("/api/asin-history")
+def asin_history():
+    project_id = str(request.args.get("project_id") or "").strip()
+    asin = str(request.args.get("asin") or "").strip().upper()
+    try:
+        days = int(str(request.args.get("days") or "30").strip())
+        projects = {item.project_id for item in load_projects()}
+        if project_id not in projects:
+            raise ValueError("产品项目不存在或未启用")
+        if not asin:
+            raise ValueError("请选择要查看的ASIN")
+        return jsonify({"ok": True, "history": build_asin_history(Database(), project_id, asin, days)})
+    except (TypeError, ValueError) as exc:
+        return response_error(exc)
+
+
+@app.get("/reports/asin-history")
+def download_asin_history():
+    project_id = str(request.args.get("project_id") or "").strip()
+    asin = str(request.args.get("asin") or "").strip().upper()
+    try:
+        days = int(str(request.args.get("days") or "30").strip())
+        projects = {item.project_id: item for item in load_projects()}
+        if project_id not in projects:
+            raise ValueError("产品项目不存在或未启用")
+        if not asin:
+            raise ValueError("请选择要导出的ASIN")
+        payload = build_asin_history_excel(project_id, asin, days)
+        filename = f"{projects[project_id].project_name}_{asin}_竞对动作档案_近{days}天.xlsx"
+        return send_file(
+            payload,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=filename,
+        )
+    except (TypeError, ValueError) as exc:
+        return response_error(exc)
 
 
 @app.get("/reports/summary/<report_type>")
