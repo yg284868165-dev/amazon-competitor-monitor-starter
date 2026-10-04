@@ -14,6 +14,10 @@ from app.paths import HTML_DIR, SCREENSHOT_DIR
 
 LOGGER = logging.getLogger(__name__)
 
+CONTINUE_SHOPPING_MAX_CLICKS = 1
+_CONTINUE_SHOPPING_PROMPT = "click the button below to continue shopping"
+_CONTINUE_SHOPPING_BUTTON_SELECTOR = 'form[action*="/errors_page/validateCaptcha"] button[type="submit"]'
+
 
 @dataclass
 class PageResult:
@@ -23,6 +27,10 @@ class PageResult:
 
 class CaptchaError(RuntimeError):
     pass
+
+
+class ContinueShoppingError(RuntimeError):
+    """Amazon's Continue shopping confirmation could not be safely cleared."""
 
 
 class BrowserManager:
@@ -74,10 +82,48 @@ class BrowserManager:
 
     async def goto(self, page: Page, url: str) -> None:
         await asyncio.sleep(random.uniform(float(self.settings.get("min_delay_seconds", 2.5)), float(self.settings.get("max_delay_seconds", 5.5))))
-        await page.goto(url, wait_until="domcontentloaded")
-        await page.wait_for_timeout(1500)
+        await self._load_target(page, url)
+
+        clicks = 0
+        while continue_button := await self._continue_shopping_button(page):
+            if clicks >= CONTINUE_SHOPPING_MAX_CLICKS:
+                raise ContinueShoppingError(
+                    "Amazon 连续返回 Continue shopping 确认页面，"
+                    f"自动点击已达上限（{CONTINUE_SHOPPING_MAX_CLICKS} 次）: {url}"
+                )
+            clicks += 1
+            LOGGER.warning(
+                "Amazon 返回 Continue shopping 确认页面，自动确认并重新访问目标（%d/%d）: %s",
+                clicks, CONTINUE_SHOPPING_MAX_CLICKS, url,
+            )
+            try:
+                await continue_button.click()
+                await self._load_target(page, url)
+            except Exception as exc:
+                raise ContinueShoppingError(
+                    f"Amazon Continue shopping 自动确认失败，无法返回目标页面: {url}"
+                ) from exc
+
         if await self.is_captcha(page):
             raise CaptchaError(f"Amazon 返回验证码页面: {url}")
+
+    @staticmethod
+    async def _load_target(page: Page, url: str) -> None:
+        await page.goto(url, wait_until="domcontentloaded")
+        await page.wait_for_timeout(1500)
+
+    @staticmethod
+    async def _continue_shopping_button(page: Page):
+        body = (await page.locator("body").inner_text()).casefold()
+        if _CONTINUE_SHOPPING_PROMPT not in body:
+            return None
+        buttons = page.locator(_CONTINUE_SHOPPING_BUTTON_SELECTOR)
+        if not await buttons.count():
+            return None
+        button = buttons.first
+        if (await button.inner_text()).strip().casefold() != "continue shopping":
+            return None
+        return button
 
     async def recover_page(self, page: Page, attempt: int) -> Page:
         """Replace a possibly poisoned Chrome error tab before the next item retry."""

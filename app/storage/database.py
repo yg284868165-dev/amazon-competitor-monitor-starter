@@ -233,6 +233,70 @@ class Database:
                 (datetime.now().isoformat(timespec="seconds"), status, success, failed, captcha, report_path, run_id),
             )
 
+    def mark_run_interrupted(
+        self, run_id: str, error_type: str, error_message: str,
+        finished_at: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """Terminalize a persisted-but-orphaned batch without losing retry targets.
+
+        A normal collection writes its complete manifest before opening Chrome.  When
+        macOS terminates the process between that write and ``finish_run``, the
+        manifest rows which remain ``success=0`` are precisely the retryable work.
+        This operation records a diagnostic for each such target and finishes the
+        run atomically.  The ``status='running'`` guard makes recovery idempotent.
+        """
+        completed = (finished_at or datetime.now()).isoformat(timespec="seconds")
+        with self.connect() as connection:
+            run = connection.execute(
+                "SELECT * FROM collection_runs WHERE run_id=?", (run_id,),
+            ).fetchone()
+            if not run or run["status"] != "running":
+                return None
+            outcomes = connection.execute(
+                """SELECT task_type,target,success FROM collection_task_outcomes
+                   WHERE run_id=?""",
+                (run_id,),
+            ).fetchall()
+            failed_outcomes = [row for row in outcomes if not int(row["success"])]
+            for outcome in failed_outcomes:
+                connection.execute(
+                    """INSERT INTO collection_errors(
+                           run_id,project_id,task_type,target,error_type,error_message,created_at
+                       )
+                       SELECT ?,?,?,?,?,?,?
+                       WHERE NOT EXISTS(
+                           SELECT 1 FROM collection_errors
+                           WHERE run_id=? AND task_type=? AND target=? AND error_type=?
+                       )""",
+                    (
+                        run_id, run["project_id"], outcome["task_type"], outcome["target"],
+                        error_type, error_message, completed,
+                        run_id, outcome["task_type"], outcome["target"], error_type,
+                    ),
+                )
+            success = sum(int(row["success"]) for row in outcomes)
+            failed = len(failed_outcomes)
+            # Legacy batches may have been interrupted before their manifest was
+            # written.  Their configured targets are rebuilt by retry logic later.
+            if not outcomes:
+                failed = int(run["total_tasks"] or 0)
+            status = "success" if failed == 0 else ("partial" if success else "failed")
+            cursor = connection.execute(
+                """UPDATE collection_runs
+                   SET finished_at=?,status=?,success_count=?,failed_count=?
+                   WHERE run_id=? AND status='running'""",
+                (completed, status, success, failed, run_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return {
+                "run_id": run_id,
+                "project_id": run["project_id"],
+                "status": status,
+                "success_count": success,
+                "failed_count": failed,
+            }
+
     def insert(self, table: str, values: dict[str, Any]) -> None:
         allowed = {"product_snapshots", "search_snapshots", "bestseller_snapshots", "change_events", "collection_errors", "collection_task_outcomes"}
         if table not in allowed:

@@ -19,27 +19,47 @@ def _rows(count: int) -> list[dict]:
     return [{"rank": rank, "asin": f"B{rank:09d}"} for rank in range(1, count + 1)]
 
 
-def test_bestseller_waits_until_lazy_items_reach_minimum(monkeypatch):
+def test_bestseller_scrolls_tail_until_lazy_items_reach_minimum(monkeypatch):
     page = FakePage()
-    parsed = iter((_rows(30), _rows(50)))
+    parsed = iter((_rows(30), _rows(38), _rows(46), _rows(50)))
     monkeypatch.setattr(collector, "parse_bestseller_page", lambda *args: next(parsed))
 
-    rows = asyncio.run(collector.wait_for_bestseller_rows(page, "Category", 4, 4))
+    rows = asyncio.run(collector.wait_for_bestseller_rows(page, "Category", 12, 4))
 
     assert len(rows) == 50
-    assert page.content.await_count == 2
+    assert page.content.await_count == 4
+    assert page.evaluate.await_count == 3
+    assert all(
+        call.args == (collector._SCROLL_BESTSELLER_TAIL,)
+        for call in page.evaluate.await_args_list
+    )
+    assert page.wait_for_timeout.await_count == 3
     assert page.wait_for_timeout.await_args_list[-1].args == (4000,)
 
 
 def test_bestseller_returns_best_partial_render_after_wait(monkeypatch):
     page = FakePage()
-    parsed = iter((_rows(38), _rows(30), _rows(30)))
+    parsed = iter((_rows(30), _rows(38), _rows(46)))
     monkeypatch.setattr(collector, "parse_bestseller_page", lambda *args: next(parsed))
 
     rows = asyncio.run(collector.wait_for_bestseller_rows(page, "Category", 8, 4))
 
-    assert len(rows) == 38
+    assert len(rows) == 46
     assert page.content.await_count == 3
+    assert page.evaluate.await_count == 2
+    assert page.wait_for_timeout.await_count == 2
+
+
+def test_bestseller_returns_immediately_when_page_is_already_complete(monkeypatch):
+    page = FakePage()
+    monkeypatch.setattr(collector, "parse_bestseller_page", lambda *args: _rows(48))
+
+    rows = asyncio.run(collector.wait_for_bestseller_rows(page, "Category", 20, 4))
+
+    assert len(rows) == 48
+    assert page.content.await_count == 1
+    page.evaluate.assert_not_awaited()
+    page.wait_for_timeout.assert_not_awaited()
 
 
 def test_bestseller_plan_for_top_50_uses_one_page_and_scaled_threshold():

@@ -8,7 +8,8 @@ from app.notifications.collection_alerts import flush_pending_collection_alerts
 from app.paths import CONFIG_DIR, ROOT, ensure_directories
 from app.scheduling import (
     CATCH_UP_MINUTES, claim_slot, due_slots, finish_slot,
-    queue_delayed_start_alert, record_failed_schedule_projects, record_missed_slot,
+    queue_delayed_start_alert, reconcile_scheduled_slots,
+    record_failed_schedule_projects, record_missed_slot,
 )
 from app.storage.database import Database
 
@@ -26,6 +27,11 @@ def main(now: datetime | None = None) -> int:
         return 0
     db = Database()
     slots = due_slots(db, config, current)
+    # A prior wrapper can be terminated by reboot/panic after it has started
+    # real collection roots but before it writes the slot's terminal state.
+    # Reconcile those roots before considering any slot "missed" or flushing
+    # pending alerts, otherwise one real batch becomes a duplicate full failure.
+    reconcile_scheduled_slots(db, slots, config, current)
     execution_rows = db.fetchall(
         "SELECT slot_time,status,claimed_at FROM scheduled_executions WHERE slot_time<=?",
         (current.isoformat(timespec="seconds"),),

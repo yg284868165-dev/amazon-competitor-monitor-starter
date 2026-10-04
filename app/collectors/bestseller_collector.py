@@ -15,6 +15,27 @@ PAGE_SIZE = 50
 SINGLE_PAGE_MINIMUM = 48
 
 
+# Amazon appends Best Sellers cards in small batches.  Scrolling the document
+# bottom can miss the intersection observer attached to the current final card,
+# so always make that card (or the list fallback) visible before the next poll.
+_SCROLL_BESTSELLER_TAIL = """
+() => {
+    const cards = Array.from(document.querySelectorAll(
+        '#gridItemRoot, .zg-grid-general-faceout'
+    ));
+    const tail = cards[cards.length - 1];
+    const fallback = document.querySelector('#zg-ordered-list, .p13n-gridRow, main');
+    const target = tail || fallback;
+    if (target) {
+        target.scrollIntoView({block: 'end', inline: 'nearest'});
+    }
+    // Move past the card slightly so its lazy-load observer is reliably crossed.
+    window.scrollBy(0, Math.max(window.innerHeight * 0.75, 500));
+    return cards.length;
+}
+"""
+
+
 def with_page(url: str, page_number: int) -> str:
     parts = urlsplit(url)
     query = dict(parse_qsl(parts.query))
@@ -26,15 +47,6 @@ async def wait_for_bestseller_rows(
     page, category_name: str, wait_seconds: float, poll_seconds: float,
     minimum_rows: int = SINGLE_PAGE_MINIMUM,
 ) -> list[dict]:
-    # Trigger Amazon's lazy-rendered cards from top to bottom once.
-    for index in range(12):
-        await page.evaluate(
-            "([step,total]) => window.scrollTo(0, document.body.scrollHeight * step / total)",
-            [index + 1, 12],
-        )
-        await page.wait_for_timeout(650)
-    await page.evaluate("window.scrollTo(0, 0)")
-
     poll_seconds = max(1.0, poll_seconds)
     checks = max(0, math.ceil(max(0.0, wait_seconds) / poll_seconds))
     best_rows: list[dict] = []
@@ -49,7 +61,7 @@ async def wait_for_bestseller_rows(
                 "榜单 %s 当前仅渲染 %d 个商品，继续等待页面补全（%d/%d）",
                 category_name, len(best_rows), check + 1, checks,
             )
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.evaluate(_SCROLL_BESTSELLER_TAIL)
             await page.wait_for_timeout(int(poll_seconds * 1000))
     return best_rows
 
